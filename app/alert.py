@@ -20,9 +20,9 @@ def send(msg, img=None):
 
 def main():
     print(f"[alert] loading engine {MODEL}")
-    m = YOLO(MODEL)
+    m = YOLO(MODEL, task="detect")  # be explicit for TensorRT engines
     print(f"[alert] streaming from {SRC}")
-    for r in m.stream(source=SRC, stream=True, device=0):
+    for r in m.predict(source=SRC, stream=True, device=0):
         if not hasattr(r, "boxes") or r.boxes is None: 
             continue
         for b in r.boxes:
