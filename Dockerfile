@@ -1,5 +1,5 @@
 # Jetson-friendly base with CUDA/cuDNN/TRT + PyTorch
-FROM nvcr.io/nvidia/l4t-ml:latest
+FROM nvcr.io/nvidia/l4t-ml:r36.3.0-py3
 
 # Avoid interactive installs
 ENV DEBIAN_FRONTEND=noninteractive
