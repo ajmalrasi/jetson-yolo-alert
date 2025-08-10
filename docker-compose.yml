@@ -24,7 +24,7 @@ services:
     network_mode: host
     env_file:
       - .env
-    working_dir: /workspace/work
+    working_dir: /workspace
     volumes:
       - ./work:/workspace/work 
     command: python3 app/export_engine.py
@@ -35,7 +35,7 @@ services:
     network_mode: host
     env_file:
       - .env
-    working_dir: /workspace/work
+    working_dir: /workspace
     volumes:
       - ./work:/workspace/work 
     depends_on:
@@ -48,7 +48,7 @@ services:
     network_mode: host
     env_file:
       - .env
-    working_dir: /workspace/work
+    working_dir: /workspace
     volumes:
       - ./work:/workspace/work 
     # live overlay preview (remove if headless; or add 'save=True' to write frames)
