@@ -15,7 +15,7 @@ services:
       - CONF_THRESH=${CONF_THRESH:-0.80}
     working_dir: /workspace
     volumes:
-      - ./work:/workspace
+      - ./work:/workspace/work 
     command: bash
 
   exporter:
@@ -24,9 +24,9 @@ services:
     network_mode: host
     env_file:
       - .env
-    working_dir: /workspace
+    working_dir: /workspace/work
     volumes:
-      - ./work:/workspace
+      - ./work:/workspace/work 
     command: python3 app/export_engine.py
 
   alert:
@@ -35,9 +35,9 @@ services:
     network_mode: host
     env_file:
       - .env
-    working_dir: /workspace
+    working_dir: /workspace/work
     volumes:
-      - ./work:/workspace
+      - ./work:/workspace/work 
     depends_on:
       - jetson-yolo
     command: python3 app/alert.py
@@ -48,8 +48,8 @@ services:
     network_mode: host
     env_file:
       - .env
-    working_dir: /workspace
+    working_dir: /workspace/work
     volumes:
-      - ./work:/workspace
+      - ./work:/workspace/work 
     # live overlay preview (remove if headless; or add 'save=True' to write frames)
     command: bash -lc 'yolo predict source="${SRC}" model="${YOLO_ENGINE:-yolov8n.engine}" device=0 stream=True'
