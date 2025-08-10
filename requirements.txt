@@ -1,4 +1,5 @@
-ultralytics
-onnx
-onnxruntime
-requests
+ultralytics==8.3.176
+onnx==1.16.2
+requests>=2.31.0
+numpy<2
+onnxslim>=0.1.59
