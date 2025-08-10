@@ -1,0 +1,4 @@
+.env
+work/
+runs/
+__pycache__/
