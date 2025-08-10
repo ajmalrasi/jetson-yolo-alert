@@ -2,6 +2,12 @@
 FROM dustynv/l4t-pytorch:r36.4.0
 # Avoid interactive installs
 ENV DEBIAN_FRONTEND=noninteractive
+
+ENV PIP_INDEX_URL=https://pypi.org/simple
+ENV PIP_EXTRA_INDEX_URL=
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_ROOT_USER_ACTION=ignore
+
 WORKDIR /workspace
 
 # Python deps
