@@ -1,0 +1,4 @@
+ultralytics
+onnx
+onnxruntime
+requests

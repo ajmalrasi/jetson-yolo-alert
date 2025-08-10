@@ -1,6 +1,7 @@
 services:
-  l4tml:
-    image: nvcr.io/nvidia/l4t-ml:latest
+  jetson-yolo:
+    build: .
+    image: jetson-yolo:local
     runtime: nvidia
     network_mode: host
     env_file:
@@ -8,10 +9,47 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all
+      # Optional tunables
+      - YOLO_MODEL=${YOLO_MODEL:-yolov8n.pt}
+      - YOLO_ENGINE=${YOLO_ENGINE:-yolov8n.engine}
+      - CONF_THRESH=${CONF_THRESH:-0.80}
+    working_dir: /workspace
     volumes:
       - ./work:/workspace
+    command: bash
+
+  exporter:
+    image: jetson-yolo:local
+    runtime: nvidia
+    network_mode: host
+    env_file:
+      - .env
     working_dir: /workspace
-    command: bash -lc "
-      pip3 install --upgrade pip &&
-      pip3 install ultralytics onnx onnxruntime &&
-      bash"
+    volumes:
+      - ./work:/workspace
+    command: python3 app/export_engine.py
+
+  alert:
+    image: jetson-yolo:local
+    runtime: nvidia
+    network_mode: host
+    env_file:
+      - .env
+    working_dir: /workspace
+    volumes:
+      - ./work:/workspace
+    depends_on:
+      - jetson-yolo
+    command: python3 app/alert.py
+
+  preview:
+    image: jetson-yolo:local
+    runtime: nvidia
+    network_mode: host
+    env_file:
+      - .env
+    working_dir: /workspace
+    volumes:
+      - ./work:/workspace
+    # live overlay preview (remove if headless; or add 'save=True' to write frames)
+    command: bash -lc 'yolo predict source="${SRC}" model="${YOLO_ENGINE:-yolov8n.engine}" device=0 stream=True'
