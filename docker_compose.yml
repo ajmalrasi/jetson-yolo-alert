@@ -1,0 +1,17 @@
+services:
+  l4tml:
+    image: nvcr.io/nvidia/l4t-ml:latest
+    runtime: nvidia
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    volumes:
+      - ./work:/workspace
+    working_dir: /workspace
+    command: bash -lc "
+      pip3 install --upgrade pip &&
+      pip3 install ultralytics onnx onnxruntime &&
+      bash"
