@@ -38,8 +38,14 @@ services:
     working_dir: /workspace
     volumes:
       - ./work:/workspace/work 
+    restart: unless-stopped
     depends_on:
       - jetson-yolo
+    logging:
+          driver: json-file
+          options:
+            max-size: "10m"
+            max-file: "3"
     command: python3 app/alert.py
 
   preview:
