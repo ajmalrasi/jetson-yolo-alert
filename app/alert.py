@@ -67,7 +67,7 @@ def run_once():
             if cls == 0 and conf >= THRESH:   # person only
                 if (last_proc - last_alert) >= COOLDOWN:
                     frame_path = "/workspace/work/alerts/frame.jpg"
-                    save_full(r, frame_path)
+                    save_frame(r, frame_path)
                     send(f"Person {conf:.2f}", frame_path)
                     last_alert = last_proc
 
