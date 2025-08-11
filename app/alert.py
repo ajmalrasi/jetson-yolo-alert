@@ -36,6 +36,11 @@ def save_crop(result, box, path):
     cv2.imwrite(path, result.orig_img[y1:y2, x1:x2])
     return path
 
+def save_frame(result, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    cv2.imwrite(path, result.orig_img)  # full frame, no boxes
+    return path
+
 def run_once():
     # Resolve engine path relative to /workspace/work as well
     model_path = MODEL if os.path.isabs(MODEL) else (
@@ -61,9 +66,9 @@ def run_once():
             cls = int(b.cls[0]); conf = float(b.conf[0])
             if cls == 0 and conf >= THRESH:   # person only
                 if (last_proc - last_alert) >= COOLDOWN:
-                    thumb = "/workspace/work/alerts/alert.jpg"
-                    save_crop(r, b, thumb)
-                    send(f"Person {conf:.2f}", thumb)
+                    frame_path = "/workspace/work/alerts/frame.jpg"
+                    save_full(r, frame_path)
+                    send(f"Person {conf:.2f}", frame_path)
                     last_alert = last_proc
 
 def main():
