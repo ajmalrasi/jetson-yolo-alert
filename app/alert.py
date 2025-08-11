@@ -1,4 +1,8 @@
-import os, time, logging, requests, cv2
+import os
+import time
+import logging
+import requests
+import cv2
 from ultralytics import YOLO
 from ultralytics.utils import LOGGER
 
@@ -11,45 +15,80 @@ COOLDOWN    = float(os.getenv("COOLDOWN_SEC", "10"))   # min seconds between ale
 VID_STRIDE  = int(os.getenv("VID_STRIDE", "4"))        # process every Nth frame
 MAX_FPS     = float(os.getenv("MAX_FPS", "3"))         # 0 = unlimited
 IMG_SIZE    = int(os.getenv("IMG_SIZE", "640"))        # inference size
-ALLOWED = {0, 2, 15, 16}
+
+# ---- class config via env (names, not IDs) ----
+# default: draw person,car,dog,cat; trigger alerts only when person present
+DRAW_CLASSES    = os.getenv("DRAW_CLASSES",    "person,car,dog,cat")
+TRIGGER_CLASSES = os.getenv("TRIGGER_CLASSES", "person")
+
+COCO80 = [
+    "person","bicycle","car","motorcycle","airplane","bus","train","truck","boat","traffic light",
+    "fire hydrant","stop sign","parking meter","bench","bird","cat","dog","horse","sheep","cow",
+    "elephant","bear","zebra","giraffe","backpack","umbrella","handbag","tie","suitcase","frisbee",
+    "skis","snowboard","sports ball","kite","baseball bat","baseball glove","skateboard","surfboard",
+    "tennis racket","bottle","wine glass","cup","fork","knife","spoon","bowl","banana","apple",
+    "sandwich","orange","broccoli","carrot","hot dog","pizza","donut","cake","chair","couch",
+    "potted plant","bed","dining table","toilet","tv","laptop","mouse","remote","keyboard","cell phone",
+    "microwave","oven","toaster","sink","refrigerator","book","clock","vase","scissors","teddy bear",
+    "hair drier","toothbrush"
+]
+NAME2ID = {n: i for i, n in enumerate(COCO80)}
+
+def _parse_names(csv: str) -> set[int]:
+    out = set()
+    for s in csv.split(","):
+        n = s.strip().lower()
+        if n and n in NAME2ID:
+            out.add(NAME2ID[n])
+    return out
+
+DRAW_IDS    = _parse_names(DRAW_CLASSES)
+TRIGGER_IDS = _parse_names(TRIGGER_CLASSES)
+
 # Quiet the Ultralytics logger
 LOGGER.setLevel(logging.ERROR)
 
-def send(msg, img=None):
-    if not (BOT and CHAT): return
+def send(msg: str, img: str | None = None) -> None:
+    if not (BOT and CHAT):
+        return
     try:
         if img and os.path.exists(img):
-            requests.post(f"https://api.telegram.org/bot{BOT}/sendPhoto",
-                          data={"chat_id": CHAT, "caption": msg},
-                          files={"photo": open(img, "rb")}, timeout=10)
+            requests.post(
+                f"https://api.telegram.org/bot{BOT}/sendPhoto",
+                data={"chat_id": CHAT, "caption": msg},
+                files={"photo": open(img, "rb")},
+                timeout=10,
+            )
         else:
-            requests.post(f"https://api.telegram.org/bot{BOT}/sendMessage",
-                          json={"chat_id": CHAT, "text": msg}, timeout=10)
+            requests.post(
+                f"https://api.telegram.org/bot{BOT}/sendMessage",
+                json={"chat_id": CHAT, "text": msg},
+                timeout=10,
+            )
     except requests.RequestException:
         pass  # stay quiet
 
-def save_annotated(result, path):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    img = result.plot()          # full frame WITH boxes & labels
-    cv2.imwrite(path, img)
-    return path
+def resolve_model_path(p: str) -> str:
+    if os.path.isabs(p) and os.path.exists(p):
+        return p
+    cand = os.path.join("/workspace/work", p)
+    return cand if os.path.exists(cand) else p
 
-def save_frame(result, path):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    cv2.imwrite(path, result.orig_img)  # full frame, no boxes
-    return path
-
-def run_once():
-    # Resolve engine path relative to /workspace/work as well
-    model_path = MODEL if os.path.isabs(MODEL) else (
-        os.path.join("/workspace/work", MODEL) if os.path.exists(os.path.join("/workspace/work", MODEL)) else MODEL
-    )
+def run_once() -> None:
+    model_path = resolve_model_path(MODEL)
     m = YOLO(model_path, task="detect")
 
     last_alert, last_proc = 0.0, 0.0
     min_dt = 0.0 if MAX_FPS <= 0 else 1.0 / MAX_FPS
 
-    for r in m.predict(source=SRC, stream=True, device=0, imgsz=IMG_SIZE, vid_stride=VID_STRIDE, verbose=False):
+    for r in m.predict(
+        source=SRC,
+        stream=True,
+        device=0,
+        imgsz=IMG_SIZE,
+        vid_stride=VID_STRIDE,
+        verbose=False,
+    ):
         # soft FPS cap
         now = time.time()
         if min_dt and (now - last_proc) < min_dt:
@@ -60,29 +99,47 @@ def run_once():
         if not boxes:
             continue
 
-        # select only allowed classes above threshold
-        sel = [i for i, b in enumerate(boxes)
-               if int(b.cls[0]) in ALLOWED and float(b.conf[0]) >= THRESH]
+        # indices to draw / to trigger
+        idx_draw = [
+            i for i, b in enumerate(boxes)
+            if int(b.cls[0]) in DRAW_IDS and float(b.conf[0]) >= THRESH
+        ]
+        idx_trig = [
+            i for i, b in enumerate(boxes)
+            if int(b.cls[0]) in TRIGGER_IDS and float(b.conf[0]) >= THRESH
+        ]
 
-        if not sel:
+        # only alert if a trigger class is present (default: person)
+        if not idx_trig:
             continue
 
-        # send ONE annotated full-frame with only the selected boxes
         if (last_proc - last_alert) >= COOLDOWN:
-            # keep only filtered boxes for plotting
-            r.boxes = r.boxes[sel]
+            # limit plotted boxes to just our chosen classes
+            try:
+                r.boxes = r.boxes[idx_draw] if idx_draw else r.boxes[:0]
+            except Exception:
+                # if slicing isn't supported, just leave all boxes (worst case)
+                pass
+
             os.makedirs("/workspace/work/alerts", exist_ok=True)
             frame_path = "/workspace/work/alerts/frame.jpg"
-            # full frame WITH boxes for only allowed classes
+
+            # full frame WITH filtered boxes & labels
             img = r.plot()
             cv2.imwrite(frame_path, img)
 
-            # caption: count + best confidence
-            best = max(float(boxes[i].conf[0]) for i in sel)
-            send(f"Detections: {len(sel)} (best {best:.2f})", frame_path)
+            # caption with count + best confidence among drawn boxes (fallback to trigger)
+            if idx_draw:
+                best = max(float(boxes[i].conf[0]) for i in idx_draw)
+                count = len(idx_draw)
+            else:
+                best = max(float(boxes[i].conf[0]) for i in idx_trig)
+                count = len(idx_trig)
+
+            send(f"Detections: {count} (best {best:.2f})", frame_path)
             last_alert = last_proc
 
-def main():
+def main() -> None:
     # reconnect/backoff loop to survive camera/network hiccups
     backoff = 2.0
     while True:
