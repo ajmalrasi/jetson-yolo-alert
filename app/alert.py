@@ -187,9 +187,17 @@ def handle_frame(r, p: Params, tm: TrackManager, thr: Throttler, frame_path: str
         return last_proc
 
     now = time.time()
+    if not hasattr(p, "rearm_time"):
+        p.rearm_time = 0
     entrants, best = tm.update_and_get_entrants(xyxy, cls, conf, ids, now)
-    thr.add(entrants, best)
-
+    # --- Adaptive FPS control ---
+    if entrants:  # trigger detected
+        p.max_fps = 15  # high FPS for better tracking
+        p.rearm_time = now + 5  # stay high FPS for 5 sec after last detection
+    elif now > p.rearm_time:
+        p.max_fps = 2  # back to idle FPS
+        thr.add(entrants, best)
+    # --- end adaptive FPS ---
     if thr.should_send(now):
         img = draw_filtered_boxes(r, cls, conf, p.draw_ids, p.conf)
         cv2.imwrite(frame_path, img)
