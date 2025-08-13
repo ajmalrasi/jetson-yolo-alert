@@ -84,9 +84,7 @@ class Params:
     conf: float = float(os.getenv("CONF_THRESH", "0.80"))
     vid_stride: int = int(os.getenv("VID_STRIDE", "6"))
     max_fps: float = float(os.getenv("MAX_FPS", "2"))
-    max_fps_on_detect: float = float(os.getenv("MAX_FPS_ON_DETECT", "0"))  # 0 = unlimited
-    rearm_time_on_detect: float = float(os.getenv("REARM_TIME_ON_DETECT", "5"))  # seconds to stay hot
-    img_size: int = int(os.getenv("IMG_SIZE", "608"))
+    img_size: int = int(os.getenv("IMG_SIZE", "640"))  # match engine
     tracker: str = os.getenv("TRACKER", "bytetrack.yaml")
     draw_ids: set[int] = field(default_factory=lambda: ids_from_names(os.getenv("DRAW_CLASSES", "person,car,dog,cat")))
     trig_ids: set[int] = field(default_factory=lambda: ids_from_names(os.getenv("TRIGGER_CLASSES", "person")))
@@ -134,11 +132,12 @@ class TrackManager:
         return entrants, best
 
 class Throttler:
-    def __init__(self, window_sec: float):
-        self.window = window_sec
-        self.last_sent = 0.0
-        self.pending_ids: set[int] = set()
-        self.pending_best = 0.0
+
+   def __init__(self, window_sec: float):
+       self.window = window_sec
+       self.last_sent = -window_sec  # allow immediate first send
+       self.pending_ids: set[int] = set()
+       self.pending_best = 0.0
 
     def add(self, ids: Iterable[int], best_conf: float):
         if ids:
@@ -216,9 +215,6 @@ def handle_frame(r, p: Params, tm: TrackManager, thr: Throttler, frame_path: str
     elif now > p.rearm_time:
         p.max_fps = p.idle_max_fps
 
-    # IMPORTANT: always add to the throttler (was missed during high-FPS before)
-    thr.add(entrants, best)
-
     # If we're due to send, snapshot + Telegram
     if thr.should_send(now):
        # prefer the saved detection-time frame; fall back to current
@@ -227,7 +223,8 @@ def handle_frame(r, p: Params, tm: TrackManager, thr: Throttler, frame_path: str
            img = draw_filtered_boxes(r, cls, conf, p.draw_ids, p.conf)
            cv2.imwrite(frame_path, img)
        n, b = thr.flush()
-       send_telegram(p.bot, p.chat, f"Person alerts: {n} new (best {b:.2f})", use_path)
+       labels = ",".join(sorted({k for k,v in NAME2ID.items() if v in p.trig_ids})) or "Object"
+       send_telegram(p.bot, p.chat, f"{labels} alerts: {n} new (best {b:.2f})", use_path)
        # cleanup
        if os.path.exists(p._pending_path):
            try: os.remove(p._pending_path)

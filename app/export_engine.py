@@ -7,12 +7,19 @@ ENGINE = os.getenv("YOLO_ENGINE", "yolov8n.engine")
 
 def main():
     print(f"[export] loading {MODEL}")
-    m = YOLO(MODEL)  # auto-downloads if not present
-    print(f"[export] exporting TensorRT engine -> {ENGINE} (FP16)")
+    m = YOLO(MODEL)
+    print(f"[export] exporting TensorRT engine -> {ENGINE} (FP16, 640)")
     m.export(format="engine", half=True, device=0, imgsz=640, dynamic=False)
-    # Ultralytics writes engine in CWD; rename if needed
-    # but by default it will be {stem}.engine
-    print("[export] done")
+    # Move/rename to shared volume so alert/preview can find it
+    import os, shutil
+    os.makedirs("/workspace/work", exist_ok=True)
+    src = os.path.splitext(MODEL)[0] + ".engine"
+    dst = os.path.join("/workspace/work", ENGINE)
+    if os.path.exists(src):
+        shutil.move(src, dst)
+        print(f"[export] saved: {dst}")
+    else:
+        print(f"[export] expected not found: {src}")
 
 if __name__ == "__main__":
     main()
