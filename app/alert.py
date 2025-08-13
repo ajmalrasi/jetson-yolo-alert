@@ -81,6 +81,8 @@ class Params:
     conf: float = float(os.getenv("CONF_THRESH", "0.80"))
     vid_stride: int = int(os.getenv("VID_STRIDE", "6"))
     max_fps: float = float(os.getenv("MAX_FPS", "2"))
+    max_fps_on_detect: float = float(os.getenv("MAX_FPS_ON_DETECT", "0"))  # 0 = unlimited
+    rearm_time_on_detect: float = float(os.getenv("REARM_TIME_ON_DETECT", "5"))  # seconds to stay hot
     img_size: int = int(os.getenv("IMG_SIZE", "608"))
     tracker: str = os.getenv("TRACKER", "bytetrack.yaml")
     draw_ids: set[int] = field(default_factory=lambda: ids_from_names(os.getenv("DRAW_CLASSES", "person,car,dog,cat")))
@@ -206,10 +208,10 @@ def handle_frame(r, p: Params, tm: TrackManager, thr: Throttler, frame_path: str
         cv2.imwrite(p._pending_path, img0)
     # Adaptive FPS: go high when we see entrants, fall back after a quiet period
     if entrants:
-        p.max_fps = 15            # temporarily speed up tracking
-        p.rearm_time = now + 5    # keep high FPS for 5s after last entrant
+        p.max_fps = p.max_fps_on_detect            # temporarily speed up tracking
+        p.rearm_time = now + p.rearm_time_on_detect    # keep high FPS for 5s after last entrant
     elif now > p.rearm_time:
-        p.max_fps = 2             # idle FPS
+        p.max_fps = p.max_fps             # idle FPS
 
     # IMPORTANT: always add to the throttler (was missed during high-FPS before)
     thr.add(entrants, best)
