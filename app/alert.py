@@ -190,12 +190,20 @@ def handle_frame(r, p: Params, tm: TrackManager, thr: Throttler, frame_path: str
         return last_proc
 
     now = time.time()
+    if not hasattr(p, "_pending_path"):
+        p._pending_path = "/workspace/work/alerts/pending.jpg"
     if not hasattr(p, "rearm_time"):
         p.rearm_time = 0.0
 
     # Track + decide who "entered" (meets min frames & persist)
     entrants, best = tm.update_and_get_entrants(xyxy, cls, conf, ids, now)
+    had_pending = bool(thr.pending_ids) # track if this is the first entrant in the batch
+    thr.add(entrants, best)
 
+# If this is the first time we got entrants for this batch, capture that frame
+    if entrants and not had_pending:
+        img0 = draw_filtered_boxes(r, cls, conf, p.draw_ids, p.conf)
+        cv2.imwrite(p._pending_path, img0)
     # Adaptive FPS: go high when we see entrants, fall back after a quiet period
     if entrants:
         p.max_fps = 15            # temporarily speed up tracking
@@ -207,11 +215,18 @@ def handle_frame(r, p: Params, tm: TrackManager, thr: Throttler, frame_path: str
     thr.add(entrants, best)
 
     # If we're due to send, snapshot + Telegram
-    if thr.should_send(now):
-        img = draw_filtered_boxes(r, cls, conf, p.draw_ids, p.conf)
-        cv2.imwrite(frame_path, img)
-        n, b = thr.flush()
-        send_telegram(p.bot, p.chat, f"Person alerts: {n} new (best {b:.2f})", frame_path)
+   if thr.should_send(now):
+       # prefer the saved detection-time frame; fall back to current
+       use_path = p._pending_path if os.path.exists(p._pending_path) else frame_path
+       if use_path == frame_path:
+           img = draw_filtered_boxes(r, cls, conf, p.draw_ids, p.conf)
+           cv2.imwrite(frame_path, img)
+       n, b = thr.flush()
+       send_telegram(p.bot, p.chat, f"Person alerts: {n} new (best {b:.2f})", use_path)
+       # cleanup
+       if os.path.exists(p._pending_path):
+           try: os.remove(p._pending_path)
+           except: pass
 
     return last_proc
 # ---------------------- small main ----------------------
