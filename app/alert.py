@@ -74,6 +74,9 @@ def send_telegram(bot: str, chat: str, text: str, photo_path: Optional[str] = No
 # ---------------------- state ----------------------
 @dataclass
 class Params:
+    idle_max_fps: float = float(os.getenv("MAX_FPS", "2"))
+    burst_max_fps: float = float(os.getenv("MAX_FPS_ON_DETECT", "0"))  # 0 = uncapped
+    rearm_time_on_detect: float = float(os.getenv("REARM_TIME_ON_DETECT", "5"))
     src: str = os.getenv("SRC", "0")
     bot: Optional[str] = os.getenv("TG_BOT") or os.getenv("TELEGRAM_TOKEN")
     chat: Optional[str] = os.getenv("TG_CHAT") or os.getenv("TELEGRAM_CHAT_ID")
@@ -234,6 +237,8 @@ def handle_frame(r, p: Params, tm: TrackManager, thr: Throttler, frame_path: str
 # ---------------------- small main ----------------------
 def main():
     p = Params()
+    p.max_fps = p.idle_max_fps
+    p.rearm_time = 0.0
     tm = TrackManager(p)
     thr = Throttler(p.rate_window)
     os.makedirs("/workspace/work/alerts", exist_ok=True)
