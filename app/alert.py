@@ -215,7 +215,7 @@ def handle_frame(r, p: Params, tm: TrackManager, thr: Throttler, frame_path: str
     thr.add(entrants, best)
 
     # If we're due to send, snapshot + Telegram
-   if thr.should_send(now):
+    if thr.should_send(now):
        # prefer the saved detection-time frame; fall back to current
        use_path = p._pending_path if os.path.exists(p._pending_path) else frame_path
        if use_path == frame_path:
