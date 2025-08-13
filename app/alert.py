@@ -133,7 +133,7 @@ class TrackManager:
 
 class Throttler:
 
-   def __init__(self, window_sec: float):
+    def __init__(self, window_sec: float):
        self.window = window_sec
        self.last_sent = -window_sec  # allow immediate first send
        self.pending_ids: set[int] = set()
