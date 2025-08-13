@@ -173,9 +173,12 @@ def iterate_tracks(p: Params):
     )
 
 def handle_frame(r, p: Params, tm: TrackManager, thr: Throttler, frame_path: str, last_proc: float) -> float:
+    # Respect max FPS (soft cap)
     last_proc = soft_fps_sleep(last_proc, p.max_fps)
+
+    # No detections in this frame?
     boxes = getattr(r, "boxes", None)
-    if not boxes or len(boxes) == 0:  # nothing this frame
+    if not boxes or len(boxes) == 0:
         return last_proc
 
     # tensors -> numpy
@@ -188,23 +191,29 @@ def handle_frame(r, p: Params, tm: TrackManager, thr: Throttler, frame_path: str
 
     now = time.time()
     if not hasattr(p, "rearm_time"):
-        p.rearm_time = 0
+        p.rearm_time = 0.0
+
+    # Track + decide who "entered" (meets min frames & persist)
     entrants, best = tm.update_and_get_entrants(xyxy, cls, conf, ids, now)
-    # --- Adaptive FPS control ---
-    if entrants:  # trigger detected
-        p.max_fps = 15  # high FPS for better tracking
-        p.rearm_time = now + 5  # stay high FPS for 5 sec after last detection
+
+    # Adaptive FPS: go high when we see entrants, fall back after a quiet period
+    if entrants:
+        p.max_fps = 15            # temporarily speed up tracking
+        p.rearm_time = now + 5    # keep high FPS for 5s after last entrant
     elif now > p.rearm_time:
-        p.max_fps = 2  # back to idle FPS
+        p.max_fps = 2             # idle FPS
+
+    # IMPORTANT: always add to the throttler (was missed during high-FPS before)
     thr.add(entrants, best)
-    # --- end adaptive FPS ---
+
+    # If we're due to send, snapshot + Telegram
     if thr.should_send(now):
         img = draw_filtered_boxes(r, cls, conf, p.draw_ids, p.conf)
         cv2.imwrite(frame_path, img)
         n, b = thr.flush()
         send_telegram(p.bot, p.chat, f"Person alerts: {n} new (best {b:.2f})", frame_path)
-    return last_proc
 
+    return last_proc
 # ---------------------- small main ----------------------
 def main():
     p = Params()
