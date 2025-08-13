@@ -205,16 +205,16 @@ def handle_frame(r, p: Params, tm: TrackManager, thr: Throttler, frame_path: str
     had_pending = bool(thr.pending_ids) # track if this is the first entrant in the batch
     thr.add(entrants, best)
 
-# If this is the first time we got entrants for this batch, capture that frame
+    # If this is the first time we got entrants for this batch, capture that frame
     if entrants and not had_pending:
         img0 = draw_filtered_boxes(r, cls, conf, p.draw_ids, p.conf)
         cv2.imwrite(p._pending_path, img0)
     # Adaptive FPS: go high when we see entrants, fall back after a quiet period
     if entrants:
-        p.max_fps = p.max_fps_on_detect            # temporarily speed up tracking
-        p.rearm_time = now + p.rearm_time_on_detect    # keep high FPS for 5s after last entrant
+        p.max_fps = p.burst_max_fps
+        p.rearm_time = now + p.rearm_time_on_detect
     elif now > p.rearm_time:
-        p.max_fps = p.max_fps             # idle FPS
+        p.max_fps = p.idle_max_fps
 
     # IMPORTANT: always add to the throttler (was missed during high-FPS before)
     thr.add(entrants, best)
