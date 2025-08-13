@@ -196,7 +196,7 @@ def handle_frame(r, p: Params, tm: TrackManager, thr: Throttler, frame_path: str
         p.rearm_time = now + 5  # stay high FPS for 5 sec after last detection
     elif now > p.rearm_time:
         p.max_fps = 2  # back to idle FPS
-        thr.add(entrants, best)
+    thr.add(entrants, best)
     # --- end adaptive FPS ---
     if thr.should_send(now):
         img = draw_filtered_boxes(r, cls, conf, p.draw_ids, p.conf)
