@@ -2,7 +2,7 @@ import logging
 from ..core.ports import Telemetry
 
 log = logging.getLogger("telemetry")
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.ERROR)
 
 class LogTelemetry(Telemetry):
     def incr(self, name: str, value: int = 1, **tags):
