@@ -1,61 +1,21 @@
-# Jetson YOLO Alert
+# Jetson YOLOv8 TensorRT Pipeline
 
-Real-time object/person detection and alert system for NVIDIA Jetson devices (or any system with GPU), using YOLO (Ultralytics) + TensorRT for high performance.  
-Supports detection rate control, presence-based FPS boost, and Telegram alerts with snapshots.
-
----
-
-## Features
-- **TensorRT acceleration** for YOLO models (`yolov8n` default).
-- **Presence policy**: boosts FPS when objects of interest are detected.
-- **Rate policy**: configurable frame rate for idle, boost, and cooldown modes.
-- **Alert policy**: batches alerts within a configurable window.
-- **Telegram integration**: sends annotated snapshots when objects are detected.
-- **Configurable via environment variables** (no hardcoding).
+A Dockerized pipeline for running **YOLOv8 object detection** on NVIDIA Jetson devices using **TensorRT** for optimized inference.
+Includes services for model export, live preview, and alerting (e.g., Telegram notifications).
 
 ---
 
-## Requirements
-- NVIDIA Jetson (Nano, Xavier, Orin, etc.) or any CUDA-capable GPU.
-- Python 3.8+
-- Ultralytics YOLOv8
-- OpenCV
-- Requests
+## 📦 Requirements
+
+* NVIDIA Jetson device (Orin, Xavier, Nano, etc.)
+* JetPack 6.x with CUDA and TensorRT installed
+* Docker & Docker Compose with NVIDIA runtime
+* `.env` file containing your configuration (see below)
 
 ---
 
-## Installation
+## ⚙️ Environment Variables (`.env`)
 
-Clone this repo:
-
-```bash
-git clone https://github.com/yourusername/jetson-yolo-alert.git
-cd jetson-yolo-alert
-```
-## Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-## Exporting YOLO model to TensorRT
-
-```bash
-YOLO_MODEL=yolov8n.pt YOLO_ENGINE=yolov8n.engine python -m app.export_engine
-```
-
-- **`YOLO_MODEL`**: Path/name of YOLOv8 model (`.pt`).  
-- **`YOLO_ENGINE`**: Output TensorRT engine file name.  
-
-The `.engine` file will be saved to `/workspace/work/`.
-
-
-## Running the alert pipeline
-
-```bash
-SRC=0 YOLO_ENGINE=yolov8n.engine TG_BOT=<bot_token> TG_CHAT=<chat_id> python -m app.run
-```
-
-**Key env vars**:
 
 | Variable            | Default                      | Description |
 |---------------------|------------------------------|-------------|
@@ -81,35 +41,101 @@ SRC=0 YOLO_ENGINE=yolov8n.engine TG_BOT=<bot_token> TG_CHAT=<chat_id> python -m 
 | `SAVE_DIR`          | `/workspace/work/alerts`      | Where to save snapshots. |
 | `DRAW`              | `1`                           | Enable drawing boxes. |
 
+---
 
-
-### Example: Run with USB camera and Telegram alerts
-
-```bash
-YOLO_ENGINE=yolov8n.engine \
-SRC=0 \
-CONF_THRESH=0.75 \
-TG_BOT=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11 \
-TG_CHAT=987654321 \
-python -m app.run
-```
-### File Structure
-```bash
-app/
-  core/           # Policies, pipeline, config, events, ports
-  adapters/       # Camera, detector, tracker, alerts
-  export_engine.py # Export YOLO → TensorRT
-  run.py           # Main loop
-```
-### Docker Usage
+## 🐍 Python Dependencies (for non-Docker testing)
 
 ```bash
-docker build -t jetson-yolo-alert .
-docker run --runtime nvidia --network host \
-  -e SRC=0 \
-  -e YOLO_ENGINE=yolov8n.engine \
-  -e TG_BOT=... \
-  -e TG_CHAT=... \
-  jetson-yolo-alert
+pip install -r requirements.txt
 ```
 
+---
+
+## 🚀 Features
+
+* **Optimized Inference** — YOLOv8 → TensorRT FP16 engine for NVIDIA Jetson (Orin, Xavier, Nano, etc.).
+* **Modular Services**:
+
+  * **`exporter`** — Converts YOLOv8 PyTorch model to TensorRT.
+  * **`jetson-yolo`** — Base container for running detection or CLI commands.
+  * **`preview`** — Live stream overlay (RTSP, USB, file).
+  * **`alert`** — Event-based object detection alerts with tracking & throttling.
+* **Object Tracking** — Uses ByteTrack for persistent IDs.
+* **Zone-based Triggers** — Alerts only for detections inside defined polygons.
+* **Telegram Notifications** — Sends text + image snapshots of detections.
+* **Configurable via `.env`** — Tune FPS, confidence thresholds, object classes, etc.
+
+---
+
+## 📂 Project Structure
+
+```
+- **core/** – Core logic: interfaces (ports), state machines, detection/alert policies, configuration, and pipeline.
+- **adapters/** – Implementations of interfaces for camera input, detection (YOLO/TensorRT), tracking, alert delivery, and telemetry.
+- **app/** – Executable scripts for running the system and exporting YOLO models to TensorRT engines.
+- **tests/** – Unit and integration tests for policies and overall behavior.
+
+```
+
+---
+
+## 🐳 Running the Pipeline
+
+### 1️⃣ Build the Docker image
+
+```bash
+docker compose build
+```
+
+### 2️⃣ Export TensorRT Engine
+
+```bash
+docker compose run --rm exporter
+```
+
+### 3️⃣ Start Detection + Alert Services
+
+```bash
+docker compose up alert
+```
+
+### 4️⃣ Live Preview (Optional)
+
+```bash
+docker compose up preview
+```
+
+---
+
+## 🔔 Alert Logic
+
+* Tracks objects using **ByteTrack**.
+* Only triggers if:
+
+  * Object class is in `TRIGGER_CLASSES`.
+  * Confidence ≥ `CONF_THRESH`.
+  * Persists for at least `MIN_PERSIST_SEC` and `MIN_FRAMES` frames.
+  * (Optional) Center point inside defined `ZONE`.
+* Groups multiple detections into a single Telegram alert per `RATE_WINDOW_SEC`.
+
+---
+
+## 🛠️ Development & Testing
+
+Run commands inside the container:
+
+```bash
+docker compose run --rm jetson-yolo bash
+```
+
+Example YOLOv8 prediction test:
+
+```bash
+yolo predict source="$SRC" model="$YOLO_ENGINE" device=0
+```
+
+---
+
+## 📜 License
+
+MIT — feel free to modify and adapt.
