@@ -17,8 +17,9 @@ class RatePolicy:
 
     def decide(self, state: PresenceState, now: float) -> RateTarget:
         if state.present:
-            if state.frames >= self.boost_arm_frames and state.present_duration(now) >= self.boost_min_sec:
-                return RateTarget(self.high_fps, 1)
+            if (state.frames >= self.boost_arm_frames) or (state.present_duration(now) >= self.boost_min_sec):
+                return RateTarget(self.high_fps, 1)  # full boost, stride=1
+            # warm-up while we wait to arm
             return RateTarget(max(self.base_fps, min(self.high_fps or 9999, 10)), 2)
         # cooling / idle
         if state.time_since_last_present(now) < self.cooldown_sec:
