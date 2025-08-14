@@ -22,12 +22,13 @@ class Pipeline:
     def __init__(self, *, camera, detector, tracker, sink, clock, tel,
                  pres, rate, alerts,
                  draw_classes: set[str], conf_thresh: float, save_dir: str, draw: bool,
-                 trigger_classes: set[str]):
+                 trigger_classes: set[str], rearm_sec: float):
         self.cam, self.det, self.trk, self.sink = camera, detector, tracker, sink
         self.clock, self.tel = clock, tel
         self.pres, self.rate, self.alerts = pres, rate, alerts
         self.draw_classes, self.conf, self.save_dir, self.draw = draw_classes, conf_thresh, save_dir, draw
         self.trigger_classes = trigger_classes
+        self.rearm_sec = rearm_sec
         os.makedirs(self.save_dir, exist_ok=True)
         self.state = PresenceState()
         self.frame_idx = 0
@@ -37,7 +38,8 @@ class Pipeline:
         min_dt = 1.0 / max_fps
         now = self.clock.now()
         dt = now - last_t
-        if dt < min_dt: self.clock.sleep(min_dt - dt)
+        if dt < min_dt:
+            self.clock.sleep(min_dt - dt)
         return self.clock.now()
 
     def run(self):
@@ -46,15 +48,20 @@ class Pipeline:
         try:
             while True:
                 # pacing
-                last_proc = self._soft_sleep(last_proc, self.rate.base_fps if not self.state.present else (self.rate.high_fps or 0))
+                last_proc = self._soft_sleep(
+                    last_proc,
+                    self.rate.base_fps if not self.state.present else (self.rate.high_fps or 0)
+                )
                 frame = self.cam.read()
-                if frame is None: continue
+                if frame is None:
+                    continue
                 self.frame_idx += 1
                 now = self.clock.now()
 
                 # detect
                 dets = self.det.detect(frame)
-                if self.trk: dets = self.trk.update(frame, dets)
+                if self.trk:
+                    dets = self.trk.update(frame, dets)
 
                 # filter trigger classes + collect best conf
                 trig = [d for d in dets if d.conf >= self.conf and d.cls_id in _COCO_NAME_TO_ID(self.trigger_classes)]
@@ -62,7 +69,7 @@ class Pipeline:
 
                 # policies
                 self.state, became_present, _ = self.pres.update(self.state, now, trig)
-                target = self.rate.decide(self.state, now)
+                target = self.rate.decide(self.state, now)  # currently only for telemetry
 
                 # capture first entrant snapshot in a batch
                 if became_present and self.draw:
@@ -71,13 +78,15 @@ class Pipeline:
                 else:
                     path = None
 
-                # alert windowing
+                # alert windowing with ID dedupe
                 enter_ids = [d.track_id for d in trig if d.track_id is not None]
+                # fallback single alert id if tracking fails but we still want at most one per window
                 if not enter_ids and trig:
                     enter_ids = [-1]
-                    
+
                 if enter_ids:
-                    self.alerts.add(enter_ids, best)
+                    self.alerts.add(enter_ids, best, now, self.rearm_sec)
+
                 if self.alerts.due(now) and self.sink:
                     use_path = path or os.path.join(self.save_dir, "frame.jpg")
                     if path is None and self.draw:
@@ -107,7 +116,7 @@ _COCO = ["person","bicycle","car","motorcycle","airplane","bus","train","truck",
 _NAME2ID = {n:i for i,n in enumerate(_COCO)}
 
 def _COCO_NAME_TO_ID(names: set[str]) -> set[int]:
-    return { _NAME2ID[n] for n in names if n in _NAME2ID }
+    return {_NAME2ID[n] for n in names if n in _NAME2ID}
 
 def _save_snapshot(path: str, frame: Frame, dets: Sequence[Detection], draw_names: set[str], conf: float):
     try:
@@ -115,8 +124,9 @@ def _save_snapshot(path: str, frame: Frame, dets: Sequence[Detection], draw_name
         img = frame.image.copy()
         keep = [d for d in dets if d.conf >= conf and d.cls_id in _COCO_NAME_TO_ID(draw_names)]
         for d in keep:
-            x1,y1,x2,y2 = d.xyxy
-            cv2.rectangle(img, (x1,y1), (x2,y2), (0,255,0), 2)
+            x1, y1, x2, y2 = d.xyxy
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0,255,0), 2)
         cv2.imwrite(path, img)
     except Exception:
+        # best-effort snapshot
         pass

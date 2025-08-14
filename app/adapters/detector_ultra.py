@@ -3,16 +3,24 @@ import numpy as np
 from ..core.ports import Detector, Detection, Frame
 
 class UltralyticsDetector(Detector):
-    def __init__(self, engine_path: str, conf: float, imgsz: int, vid_stride: int):
+    def __init__(self, engine_path: str, conf: float, imgsz: int, vid_stride: int, tracker_cfg: str | None):
         self.model = YOLO(engine_path, task="detect")
         self.conf = conf
         self.imgsz = imgsz
         self.vid_stride = vid_stride
+        self.tracker_cfg = tracker_cfg
 
-    def detect(self, frame: Frame):
-        r = self.model.predict(
-            source=frame.image, imgsz=self.imgsz, conf=self.conf,
-            vid_stride=self.vid_stride, device=0, verbose=False
+    def detect(self, frame: Frame): 
+         # Use tracking API so boxes.id is populated across frames 
+        r = self.model.track(
+            source=frame.image, 
+            imgsz=self.imgsz, 
+            conf=self.conf, 
+            vid_stride=self.vid_stride, 
+            tracker=self.tracker_cfg, 
+            persist=True, 
+            device=0, 
+            verbose=False, 
         )[0]
         boxes = getattr(r, "boxes", None)
         if boxes is None or len(boxes) == 0:
