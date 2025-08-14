@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Protocol, Iterable, Sequence, Optional, Tuple, runtime_checkable
+from typing import Protocol, Iterable, Sequence, Optional, Tuple, runtime_checkable, Any
 
 # ---------- Basic types ----------
 @dataclass
@@ -12,7 +12,7 @@ class Detection:
 
 @dataclass
 class Frame:
-    image  # np.ndarray
+    image: Any  # np.ndarray
     t: float
     index: int
     w: int
