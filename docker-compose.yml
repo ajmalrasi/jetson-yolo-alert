@@ -46,7 +46,7 @@ services:
           options:
             max-size: "10m"
             max-file: "3"
-    command: python3 app/alert.py
+    command: python3 -m app.app.run
 
   preview:
     image: jetson-yolo:local
