@@ -19,14 +19,15 @@ class Ctx:
     snapshot_path: Optional[str] = None
 
 class Pipeline:
-    def __init__(self, *, camera: Camera, detector: Detector, tracker: Optional[ITracker],
-                 sink: Optional[AlertSink], clock: Clock, tel: Telemetry,
-                 pres: PresencePolicy, rate: RatePolicy, alerts: AlertPolicy,
-                 draw_classes: set[str], conf_thresh: float, save_dir: str, draw: bool):
+    def __init__(self, *, camera, detector, tracker, sink, clock, tel,
+                 pres, rate, alerts,
+                 draw_classes: set[str], conf_thresh: float, save_dir: str, draw: bool,
+                 trigger_classes: set[str]):
         self.cam, self.det, self.trk, self.sink = camera, detector, tracker, sink
         self.clock, self.tel = clock, tel
         self.pres, self.rate, self.alerts = pres, rate, alerts
         self.draw_classes, self.conf, self.save_dir, self.draw = draw_classes, conf_thresh, save_dir, draw
+        self.trigger_classes = trigger_classes
         os.makedirs(self.save_dir, exist_ok=True)
         self.state = PresenceState()
         self.frame_idx = 0
@@ -56,7 +57,7 @@ class Pipeline:
                 if self.trk: dets = self.trk.update(frame, dets)
 
                 # filter trigger classes + collect best conf
-                trig = [d for d in dets if d.conf >= self.conf and d.cls_id in _COCO_NAME_TO_ID(self.draw_classes)]
+                trig = [d for d in dets if d.conf >= self.conf and d.cls_id in _COCO_NAME_TO_ID(self.trigger_classes)]
                 best = max((d.conf for d in trig), default=0.0)
 
                 # policies
@@ -72,6 +73,9 @@ class Pipeline:
 
                 # alert windowing
                 enter_ids = [d.track_id for d in trig if d.track_id is not None]
+                if not enter_ids and trig:
+                    enter_ids = [-1]
+                    
                 if enter_ids:
                     self.alerts.add(enter_ids, best)
                 if self.alerts.due(now) and self.sink:
@@ -79,7 +83,7 @@ class Pipeline:
                     if path is None and self.draw:
                         _save_snapshot(use_path, frame, dets, self.draw_classes, self.conf)
                     n, b = self.alerts.flush(now)
-                    label = ",".join(sorted(self.draw_classes)) or "object"
+                    label = ",".join(sorted(self.trigger_classes)) or "object"
                     self.sink.send(f"{label} alerts: {n} new (best {b:.2f})", use_path)
 
                 # telemetry

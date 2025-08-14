@@ -33,10 +33,14 @@ def main():
                       cooldown_sec=cfg.cooldown_sec, base_stride=cfg.vid_stride)
     alerts = AlertPolicy(window_sec=cfg.rate_window_sec)
 
-    pipe = Pipeline(camera=cam, detector=det, tracker=trk, sink=sink,
-                    clock=clock, tel=tel, pres=pres, rate=rate, alerts=alerts,
-                    draw_classes=cfg.draw_classes, conf_thresh=cfg.conf_thresh,
-                    save_dir=cfg.save_dir, draw=cfg.draw)
+    pipe = Pipeline(
+        camera=cam, detector=det, tracker=trk, sink=sink,
+        clock=clock, tel=tel, pres=pres, rate=rate, alerts=alerts,
+        draw_classes=cfg.draw_classes, conf_thresh=cfg.conf_thresh,
+        save_dir=cfg.save_dir, draw=cfg.draw,
+        trigger_classes=cfg.trigger_classes, 
+    )
+
     pipe.run()
 
 if __name__ == "__main__":
