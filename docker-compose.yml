@@ -27,7 +27,8 @@ services:
     working_dir: /workspace
     volumes:
       - ./work:/workspace/work 
-    command: python3 app/export_engine.py
+    command: python3 -m app.tools.export_engine
+
 
   alert:
     image: jetson-yolo:local
