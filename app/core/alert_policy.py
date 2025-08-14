@@ -7,13 +7,9 @@ class AlertPolicy:
     last_sent: float = field(default=-1e9)
     pending_ids: set[int] = field(default_factory=set)
     pending_best: float = 0.0
-    # Track last alert time per track-id to dedupe
-    last_by_id: Dict[int, float] = field(default_factory=dict)
+    last_by_id: Dict[int, float] = field(default_factory=dict)  # id -> last alert time
 
     def add(self, ids: Iterable[int], best_conf: float, now: float, rearm_sec: float):
-        """
-        Queue only IDs that have not alerted within rearm_sec.
-        """
         added_any = False
         for i in ids:
             last = self.last_by_id.get(i, -1e9)
@@ -28,7 +24,6 @@ class AlertPolicy:
 
     def flush(self, now: float) -> tuple[int, float]:
         n, b = len(self.pending_ids), self.pending_best
-        # mark all pending ids as alerted now
         for i in list(self.pending_ids):
             self.last_by_id[i] = now
         self.pending_ids.clear()

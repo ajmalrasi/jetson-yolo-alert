@@ -9,11 +9,10 @@ from ..adapters.camera_cv2 import Cv2Camera
 from ..adapters.detector_ultra import UltralyticsDetector
 from ..adapters.alerts_telegram import TelegramSink
 from ..adapters.telemetry_log import LogTelemetry
-from ..adapters.tracker_x import PassthroughTracker
+# External tracker not required when using YOLO.track()
 
 def resolve_path(p: str) -> str:
-    if os.path.isabs(p):
-        return p
+    if os.path.isabs(p): return p
     cand = os.path.join("/workspace/work", p)
     return cand if os.path.exists(cand) else p
 
@@ -28,33 +27,24 @@ def main():
         conf=cfg.conf_thresh,
         imgsz=cfg.img_size,
         vid_stride=cfg.vid_stride,
-        tracker_cfg=cfg.tracker_cfg,  # pass tracker to YOLO so .id is populated
+        tracker_cfg=resolve_path(cfg.tracker_cfg),  # <- use TRACKER from .env
     )
-
-    # YOLO handles tracking internally when tracker_cfg is provided; external tracker optional
-    trk = PassthroughTracker() if cfg.tracker_on else None
 
     sink = TelegramSink(cfg.tg_token, cfg.tg_chat)
 
     pres = PresencePolicy(min_frames=cfg.min_frames, min_persist_sec=cfg.min_persist_sec)
     rate = RatePolicy(
-        base_fps=cfg.base_fps,
-        high_fps=cfg.high_fps,
-        boost_arm_frames=cfg.boost_arm_frames,
-        boost_min_sec=cfg.boost_min_sec,
-        cooldown_sec=cfg.cooldown_sec,
-        base_stride=cfg.vid_stride,
+        base_fps=cfg.base_fps, high_fps=cfg.high_fps,
+        boost_arm_frames=cfg.boost_arm_frames, boost_min_sec=cfg.boost_min_sec,
+        cooldown_sec=cfg.cooldown_sec, base_stride=cfg.vid_stride
     )
     alerts = AlertPolicy(window_sec=cfg.rate_window_sec)
 
-    pipe = Pipeline(
-        camera=cam, detector=det, tracker=trk, sink=sink,
-        clock=clock, tel=tel, pres=pres, rate=rate, alerts=alerts,
-        draw_classes=cfg.draw_classes, conf_thresh=cfg.conf_thresh,
-        save_dir=cfg.save_dir, draw=cfg.draw,
-        trigger_classes=cfg.trigger_classes,
-        rearm_sec=cfg.rearm_sec,
-    )
+    pipe = Pipeline(camera=cam, detector=det, tracker=None, sink=sink,
+                    clock=clock, tel=tel, pres=pres, rate=rate, alerts=alerts,
+                    draw_classes=cfg.draw_classes, conf_thresh=cfg.conf_thresh,
+                    save_dir=cfg.save_dir, draw=cfg.draw,
+                    trigger_classes=cfg.trigger_classes)
     pipe.run()
 
 if __name__ == "__main__":
