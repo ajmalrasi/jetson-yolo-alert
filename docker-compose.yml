@@ -36,17 +36,28 @@ services:
     network_mode: host
     env_file:
       - .env
+    # ↓↓↓ Add this block ↓↓↓
+    environment:
+      # Prefer FFmpeg over TCP with bigger buffers (fix H.264 bytestream errors)
+      - OPENCV_FFMPEG_CAPTURE_OPTIONS=rtsp_transport;tcp;stimeout;10000000;buffer_size;10485760;reorder_queue_size;0
+      - CAP_PROP_BUFFERSIZE=2
+
+      # If you switch to the GStreamer path in camera_cv2.py, set this to 1
+      # (leave it 0 to keep FFmpeg). Latency tunes RTSP jitter buffer.
+      - USE_GSTREAMER=0
+      - RTSP_LATENCY_MS=200
+    # ↑↑↑ End of additions ↑↑↑
     working_dir: /workspace
     volumes:
-      - ./work:/workspace/work 
+      - ./work:/workspace/work
     restart: unless-stopped
     depends_on:
       - jetson-yolo
     logging:
-          driver: json-file
-          options:
-            max-size: "10m"
-            max-file: "3"
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     command: python3 -m app.app.run
 
   preview:

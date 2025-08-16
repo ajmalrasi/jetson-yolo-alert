@@ -3,3 +3,4 @@ onnx==1.16.2
 requests>=2.31.0
 numpy<2
 onnxslim>=0.1.59
+lap>=0.5.1
