@@ -1,13 +1,10 @@
 from dataclasses import dataclass
 from typing import Optional, Sequence
-import os, cv2
+import cv2
 
-from .ports import Camera, Detector, ITracker, AlertSink, Telemetry, Detection, Frame
-from .clock import Clock
+from .ports import Detection, Frame
 from .state import PresenceState
-from .presence_policy import PresencePolicy
-from .rate_policy import RatePolicy, RateTarget
-from .alert_policy import AlertPolicy
+from .rate_policy import RateTarget
 
 @dataclass
 class Ctx:
@@ -28,6 +25,7 @@ class Pipeline:
         self.pres, self.rate, self.alerts = pres, rate, alerts
         self.draw_classes, self.conf, self.save_dir, self.draw = draw_classes, conf_thresh, save_dir, draw
         self.trigger_classes = trigger_classes
+        import os
         os.makedirs(self.save_dir, exist_ok=True)
         self.state = PresenceState()
         self.frame_idx = 0
@@ -113,7 +111,6 @@ def _COCO_NAME_TO_ID(names: set[str]) -> set[int]:
 
 def _save_snapshot(path: str, frame: Frame, dets: Sequence[Detection], draw_names: set[str], conf: float):
     try:
-        import numpy as np
         img = frame.image.copy()
         keep = [d for d in dets if d.conf >= conf and d.cls_id in _COCO_NAME_TO_ID(draw_names)]
         for d in keep:
