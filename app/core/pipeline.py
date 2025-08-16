@@ -54,6 +54,7 @@ class Pipeline:
                 if frame is None: continue
                 self.frame_idx += 1
                 now = self.clock.now()
+                ts = f"{self.frame_idx}_{int(now*1000)}"
 
                 # detect
                 dets = self.det.detect(frame)
@@ -69,20 +70,18 @@ class Pipeline:
 
                 # snapshot when presence arms
                 if became_present and self.draw:
-                    path = os.path.join(self.save_dir, "pending.jpg")
+                    path = os.path.join(self.save_dir, f"pending_{ts}.jpg")
                     _save_snapshot(path, frame, dets, self.draw_classes, self.conf)
                 else:
                     path = None
 
-                # alert windowing + per-ID cooldown
-                enter_ids = [d.track_id for d in trig if d.track_id is not None]
-                if not enter_ids and trig:
-                    enter_ids = [-1]
-                if enter_ids:
+                # alert only on session start (no periodic resend)
+                if became_present:
+                    enter_ids = [d.track_id for d in trig if d.track_id is not None] or [-1]
                     self.alerts.add(enter_ids, best, now, self.rearm_sec)
 
                 if self.alerts.due(now) and self.sink:
-                    use_path = path or os.path.join(self.save_dir, "frame.jpg")
+                    use_path = path or os.path.join(self.save_dir, f"frame_{ts}.jpg")
                     if path is None and self.draw:
                         _save_snapshot(use_path, frame, dets, self.draw_classes, self.conf)
                     n, b = self.alerts.flush(now)

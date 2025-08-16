@@ -17,7 +17,8 @@ class PresenceState:
 
     def on_idle(self, t: float):
         if self.present:
-            self.last_t = t
+            # transition to idle; keep last_t as the last seen time
+            self.present = False
 
     def present_duration(self, t: float) -> float:
         if not self.present: return 0.0

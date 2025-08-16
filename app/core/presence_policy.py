@@ -20,4 +20,5 @@ class PresencePolicy:
         else:
             if state.present:
                 state.on_idle(t)
+                became_idle = True
         return state, became_present, became_idle
