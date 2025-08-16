@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from typing import Optional, Sequence
-import cv2
-
+import cv2, os
 from .ports import Detection, Frame
 from .state import PresenceState
 from .rate_policy import RateTarget
@@ -31,7 +30,6 @@ class Pipeline:
         self.frame_idx = 0
 
         # read rearm from env via config (import avoided to keep deps clean)
-        import os
         self.rearm_sec = float(os.getenv("REARM_SEC", "10"))
 
     def _soft_sleep(self, last_t: float, max_fps: float) -> float:
