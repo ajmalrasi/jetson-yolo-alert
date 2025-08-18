@@ -45,7 +45,8 @@ class Pipeline:
         last_proc = 0.0
         try:
             while True:
-                last_proc = self._soft_sleep(last_proc, self.rate.base_fps if not self.state.present else (self.rate.high_fps or 0))
+                target = self.rate.decide(self.state, self.clock.now())
+                last_proc = self._soft_sleep(last_proc, target.fps if (target.fps or 0) > 0 else 0)
                 frame = self.cam.read()
                 if frame is None: continue
                 self.frame_idx += 1
@@ -71,10 +72,14 @@ class Pipeline:
                 else:
                     path = None
 
-                # alert only on session start (no periodic resend)
+                ids_now = [d.track_id for d in trig if d.track_id is not None] or [-1]
                 if became_present:
-                    enter_ids = [d.track_id for d in trig if d.track_id is not None] or [-1]
-                    self.alerts.add(enter_ids, best, now, self.rearm_sec)
+                    # always seed on entry
+                    self.alerts.add(ids_now, best, now, self.rearm_sec)
+
+                # ALSO keep seeding while present so fast movers don’t get missed
+                if self.state.present and trig:
+                    self.alerts.add(ids_now, best, now, self.rearm_sec)
 
                 if self.alerts.due(now) and self.sink:
                     use_path = path or os.path.join(self.save_dir, f"frame_{ts}.jpg")
