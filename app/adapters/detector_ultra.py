@@ -9,6 +9,8 @@ class UltralyticsDetector(Detector):
         self.imgsz = imgsz
         self.vid_stride = vid_stride
         self.tracker_cfg = tracker_cfg  # e.g. botsort.yaml or bytetrack.yaml
+        self.labels = getattr(self.model, "names", None)
+
 
     def detect(self, frame: Frame):
         r = self.model.track(
