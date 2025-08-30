@@ -60,14 +60,18 @@ services:
         max-file: "3"
     command: python3 -m app.app.run
 
-  preview:
-    image: jetson-yolo:local
-    runtime: nvidia
-    network_mode: host
-    env_file:
-      - .env
-    working_dir: /workspace
-    volumes:
-      - ./work:/workspace/work
-    command: python3 -m app.app.preview
+preview:
+  image: jetson-yolo:local
+  runtime: nvidia
+  network_mode: host
+  env_file:
+    - .env
+  working_dir: /workspace
+  environment:
+    - DISPLAY=${DISPLAY}        # pass host DISPLAY (usually :0)
+    - QT_X11_NO_MITSHM=1        # avoids MIT-SHM issues in containers
+  volumes:
+    - ./work:/workspace/work
+    - /tmp/.X11-unix:/tmp/.X11-unix:rw   # X11 socket
+  command: python3 -m app.app.preview
 
