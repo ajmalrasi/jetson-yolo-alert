@@ -13,6 +13,12 @@ from app.adapters.camera_cv2 import Cv2Camera
 from app.adapters.detector_ultra import UltralyticsDetector
 from app.adapters.telemetry_log import LogTelemetry
 
+import os
+def resolve_path(p: str) -> str:
+    if not p:
+        return p
+    return p if os.path.isabs(p) else os.path.join("/workspace/work", p)
+
 
 def main():
     # Fail fast if there's no display (you said to exit the process)
@@ -29,13 +35,12 @@ def main():
 
     cam = Cv2Camera(cfg.src, clock=clock)
 
-    # Use your config field names verbatim
     det = UltralyticsDetector(
-        engine_path=cfg.engine,                 # 'engine' from Config
-        conf=cfg.conf_thresh,                   # 'conf_thresh'
-        imgsz=cfg.img_size,                     # 'img_size'
-        vid_stride=cfg.vid_stride,              # 'vid_stride'
-        tracker_cfg=(cfg.tracker_cfg if cfg.tracker_on else None)  # 'tracker_cfg' + 'tracker_on'
+        engine_path=resolve_path(cfg.engine),
+        conf=cfg.conf_thresh,
+        imgsz=cfg.img_size,
+        vid_stride=cfg.vid_stride,
+        tracker_cfg=(cfg.tracker_cfg if cfg.tracker_on else None),
     )
 
     pres = PresencePolicy(cfg.min_frames, cfg.min_persist_sec)
