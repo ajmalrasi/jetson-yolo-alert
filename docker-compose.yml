@@ -68,6 +68,19 @@ services:
       - .env
     working_dir: /workspace
     volumes:
-      - ./work:/workspace/work 
-    # live overlay preview (remove if headless; or add 'save=True' to write frames)
-    command: bash -lc 'yolo predict source="${SRC}" model="${YOLO_ENGINE:-yolov8n.engine}" device=0 stream=True'
+      - ./work:/workspace/work
+    environment:
+      - OPENCV_FFMPEG_CAPTURE_OPTIONS=rtsp_transport;tcp;stimeout;10000000;buffer_size;10485760;reorder_queue_size;0
+      - USE_GSTREAMER=0
+      - RTSP_LATENCY_MS=200
+    command: >
+      bash -lc 'yolo predict
+        source="${SRC}"
+        model="${YOLO_ENGINE:-yolov8n.engine}"
+        device=0
+        show=False
+        save=True
+        project=/workspace/work/preview
+        name=run
+        exist_ok=True
+        stream_buffer=False'
