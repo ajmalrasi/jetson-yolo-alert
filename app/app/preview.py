@@ -20,6 +20,10 @@ def resolve_path(p: str) -> str:
     return p if os.path.isabs(p) else os.path.join("/workspace/work", p)
 
 
+preview_dir = "/workspace/work/preview"
+os.makedirs(preview_dir, exist_ok=True)
+
+
 def main():
     # Fail fast if there's no display (you said to exit the process)
     try:
@@ -67,7 +71,7 @@ def main():
         alerts=alerts,
         draw_classes=cfg.draw_classes,
         conf_thresh=cfg.conf_thresh,
-        save_dir=None,
+        save_dir=preview_dir,
         draw=True,
         trigger_classes=cfg.trigger_classes,
     )
