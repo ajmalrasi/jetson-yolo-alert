@@ -51,9 +51,25 @@ class Cv2Camera(Camera):
         ok, img = self.cap.read()
         if not ok:
             return None
-        ts = self.clock.now()
+
+        # increment sequential index
         self.idx += 1
-        return Frame(image=img, ts=ts, idx=self.idx)
+
+        # width & height from the actual frame (robust across backends)
+        try:
+            h, w = img.shape[:2]
+        except Exception:
+            # fallback to capture props if needed
+            w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 0
+            h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 0
+
+        return Frame(
+            image=img,
+            t=self.clock.now(),
+            index=self.idx,
+            w=w,
+            h=h,
+        )
 
     def release(self) -> None:
         self.close()
