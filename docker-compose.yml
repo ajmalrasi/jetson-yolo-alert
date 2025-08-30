@@ -70,6 +70,7 @@ services:
     environment:
       - DISPLAY=${DISPLAY}        # pass host DISPLAY (usually :0)
       - QT_X11_NO_MITSHM=1        # avoids MIT-SHM issues in containers
+      - OPENCV_FFMPEG_CAPTURE_OPTIONS=rtsp_transport;tcp|stimeout;5000000|max_delay;500000
     volumes:
       - ./work:/workspace/work
       - /tmp/.X11-unix:/tmp/.X11-unix:rw   # X11 socket

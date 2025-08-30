@@ -11,28 +11,44 @@ class Cv2Camera(Camera):
         self.clock = clock or SystemClock()
         self.idx = 0
 
-    def open(self) -> None:
-        self.cap = cv2.VideoCapture(self.src)
-        if isinstance(self.src, str) and self.src.startswith("rtsp://") and os.getenv("USE_GSTREAMER", "0") not in ("0","false","False",""):
-            latency = int(os.getenv("RTSP_LATENCY_MS", "200"))
+def open(self) -> None:
+    # Prefer explicit backend selection; no pre-open
+    if isinstance(self.src, str) and self.src.startswith("rtsp://"):
+        use_gst = os.getenv("USE_GSTREAMER", "0") not in ("0", "false", "False", "")
+        latency = int(os.getenv("RTSP_LATENCY_MS", "200"))
+
+        if not use_gst:
+            # Try FFmpeg first
+            self.cap = cv2.VideoCapture(self.src, cv2.CAP_FFMPEG)
+            try:
+                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, int(os.getenv("CAP_PROP_BUFFERSIZE", "2")))
+            except Exception:
+                pass
+
+            # Auto-fallback to GStreamer if FFmpeg failed
+            if not self.cap.isOpened():
+                use_gst = True
+
+        if use_gst:
             pipe = (
                 f"rtspsrc location={self.src} protocols=tcp latency={latency} ! "
-                "rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! appsink"
+                "rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! "
+                "appsink drop=1 sync=false max-buffers=1"
             )
             self.cap = cv2.VideoCapture(pipe, cv2.CAP_GSTREAMER)
-        else:
-            self.cap = cv2.VideoCapture(self.src, cv2.CAP_FFMPEG)
-            try: self.cap.set(cv2.CAP_PROP_BUFFERSIZE, int(os.getenv("CAP_PROP_BUFFERSIZE", "2")))
-            except: pass
-        if not self.cap.isOpened():
-            raise RuntimeError(f"Failed to open camera source: {self.src}")
+    else:
+        # USB cam / file / numeric index
+        self.cap = cv2.VideoCapture(self.src, cv2.CAP_FFMPEG)
 
-    def read(self) -> Optional[Frame]:
-        ok, img = self.cap.read()
-        if not ok: return None
-        self.idx += 1
-        h, w = img.shape[:2]
-        return Frame(image=img, t=self.clock.now(), index=self.idx, w=w, h=h)
+    if not self.cap or not self.cap.isOpened():
+        raise RuntimeError(f"Failed to open camera source: {self.src}")
+
+    def release(self) -> None:
+        self.close()
 
     def close(self) -> None:
-        if self.cap: self.cap.release()
+        if self.cap:
+            try:
+                self.cap.release()
+            finally:
+                self.cap = None
