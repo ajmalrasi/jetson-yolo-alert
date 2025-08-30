@@ -1,5 +1,5 @@
 import cv2
-from app.core.config import load_config
+from app.core.config import Config
 from app.core.clock import SystemClock
 from app.core.presence_policy import PresencePolicy
 from app.core.rate_policy import RatePolicy
@@ -11,7 +11,7 @@ from app.adapters.telemetry_log import LogTelemetry
 
 def main():
     """Run full pipeline in preview mode (imshow, no alerts)."""
-    cfg = load_config()
+    cfg = Config()
     clock = SystemClock()
     tel = LogTelemetry()
 
