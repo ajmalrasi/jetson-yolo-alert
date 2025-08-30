@@ -79,6 +79,7 @@ def main():
     print("▶ Preview running. Press 'q' to quit.")
     for ctx in pipe.run():
         if ctx.frame is not None:
+            cv2.namedWindow("YOLO Preview", cv2.WINDOW_NORMAL)
             cv2.imshow("YOLO Preview", ctx.frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
