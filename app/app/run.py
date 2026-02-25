@@ -40,12 +40,23 @@ def main():
     )
     alerts = AlertPolicy(window_sec=cfg.rate_window_sec)
 
-    pipe = Pipeline(camera=cam, detector=det, tracker=None, sink=sink,
-                    clock=clock, tel=tel, pres=pres, rate=rate, alerts=alerts,
-                    draw_classes=cfg.draw_classes, conf_thresh=cfg.conf_thresh,
-                    save_dir=cfg.save_dir, draw=cfg.draw,
-                    trigger_classes=cfg.trigger_classes)
-    pipe.run()
+    pipe = Pipeline(
+        cfg=cfg,
+        clock=clock,
+        camera=cam,
+        detector=det,
+        tracker=None,
+        presence=pres,
+        rate=rate,
+        alerts=alerts,
+        sink=sink,
+        telemetry=tel,
+    )
+    cam.open()
+    try:
+        pipe.run()
+    finally:
+        cam.close()
 
 if __name__ == "__main__":
     main()

@@ -40,9 +40,9 @@ class Config:
     # Tracker
     tracker_cfg: Optional[str] = os.getenv("TRACKER", "bytetrack.yaml")
     tracker_on: bool = os.getenv("TRACKER_ON", "1") not in ("0", "false", "False", "")
-    # Telegram
-    tg_token: Optional[str] = os.getenv("TELEGRAM_TOKEN")
-    tg_chat: Optional[str]  = os.getenv("TELEGRAM_CHAT_ID")
+    # Telegram (TELEGRAM_* or TG_BOT/TG_CHAT from README)
+    tg_token: Optional[str] = os.getenv("TELEGRAM_TOKEN") or os.getenv("TG_BOT")
+    tg_chat: Optional[str] = os.getenv("TELEGRAM_CHAT_ID") or os.getenv("TG_CHAT")
     # Misc
     save_dir: str = os.getenv("SAVE_DIR", "/workspace/work/alerts")
     draw: bool = os.getenv("DRAW", "1") not in ("0","false","False","")
