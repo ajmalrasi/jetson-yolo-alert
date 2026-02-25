@@ -1,7 +1,7 @@
-import types
 import numpy as np
 from app.core.ports import Camera, Detector, Detection, Frame
 from app.core.clock import SystemClock
+from app.core.config import Config
 from app.core.presence_policy import PresencePolicy
 from app.core.rate_policy import RatePolicy
 from app.core.alert_policy import AlertPolicy
@@ -34,31 +34,43 @@ class NullTel:
     def time_ms(self, *a, **k): pass
 
 def test_smoke_runs_for_a_few_frames(monkeypatch):
+    monkeypatch.setenv("TRIGGER_CLASSES", "person")
+    monkeypatch.setenv("DRAW_CLASSES", "person")
+    monkeypatch.setenv("CONF_THRESH", "0.8")
+    monkeypatch.setenv("SAVE_DIR", "/tmp")
+    monkeypatch.setenv("DRAW", "0")
+    monkeypatch.setenv("REARM_SEC", "10")
+    monkeypatch.setenv("RATE_WINDOW_SEC", "1")
+    cfg = Config()
     cam = FakeCamera()
     det = FakeDetector()
+    # Give detector a labels list so Pipeline can build name2id (class 0 = person)
+    det.labels = ["person"]
     pipe = Pipeline(
-        camera=cam, detector=det, tracker=None, sink=NullSink(),
-        clock=SystemClock(), tel=NullTel(),
-        pres=PresencePolicy(min_frames=3, min_persist_sec=0.5),
+        cfg=cfg,
+        clock=SystemClock(),
+        camera=cam,
+        detector=det,
+        tracker=None,
+        presence=PresencePolicy(min_frames=3, min_persist_sec=0.5),
         rate=RatePolicy(base_fps=2, high_fps=20, boost_arm_frames=3, boost_min_sec=0.5, cooldown_sec=3, base_stride=2),
         alerts=AlertPolicy(window_sec=1.0),
-        draw_classes={"person"}, conf_thresh=0.8, save_dir="/tmp", draw=False
+        sink=NullSink(),
+        telemetry=NullTel(),
     )
-    # Run only a handful of iterations
+    # Run only a handful of iterations (override run to avoid infinite loop)
     iters = 0
-    orig_run = pipe.run
     def limited_run():
         nonlocal iters
-        pipe.cam.open()
+        cam.open()
         try:
             while iters < 12:
                 iters += 1
-                # inline the top of loop to avoid sleeping in tests
-                frame = pipe.cam.read()
-                if frame is None: continue
-                dets = pipe.det.detect(frame)
-                # we don't validate more in this smoke test
+                frame = cam.read()
+                if frame is None:
+                    continue
+                _ = det.detect(frame)
         finally:
-            pipe.cam.close()
+            cam.close()
     pipe.run = limited_run
-    limited_run()
+    pipe.run()
