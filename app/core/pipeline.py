@@ -162,8 +162,9 @@ class AlertStep(PipelineStep):
             best = max(d.conf for d in ctx.trigger_dets) if ctx.trigger_dets else 0.0
             self.alert.add(ids, best_conf=best, now=ctx.now, rearm_sec=self.rearm_sec)
 
-        # if due, flush window
-        if self.alert.due(ctx.now):
+        # if due, flush window only when we still see trigger objects this frame
+        # (avoids sending "N objects" when the scene is now empty)
+        if self.alert.due(ctx.now) and ctx.trigger_dets:
             count, best = self.alert.flush(ctx.now)
             ctx.alert_count = count
             ctx.alert_best_conf = best
