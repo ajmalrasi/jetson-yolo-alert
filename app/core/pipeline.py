@@ -156,28 +156,28 @@ class AlertStep(PipelineStep):
     telemetry: Telemetry
 
     def run(self, ctx: Ctx) -> Ctx:
-        # accumulate alerts whenever we see triggers
-        if ctx.trigger_dets:
-            ids = [d.track_id for d in ctx.trigger_dets if d.track_id is not None]
+        # accumulate alerts only when presence persistence conditions are met
+        if ctx.became_present or (ctx.state.present and ctx.trigger_dets):
+            ids = [d.track_id for d in ctx.trigger_dets if d.track_id is not None] or [-1]
             best = max(d.conf for d in ctx.trigger_dets) if ctx.trigger_dets else 0.0
-            self.alert.add(ids, best_conf=best, now=ctx.now, rearm_sec=self.rearm_sec)
-
-        # if due, flush window only when we still see trigger objects this frame
-        # (avoids sending "N objects" when the scene is now empty)
-        if self.alert.due(ctx.now) and ctx.trigger_dets:
-            count, best = self.alert.flush(ctx.now)
-            ctx.alert_count = count
-            ctx.alert_best_conf = best
-
-            # snapshot (optional)
+            
+            # take a snapshot at the moment of detection (if drawing is enabled)
             img_path = None
-            if ctx.frame is not None and self.draw:
+            if ctx.frame is not None and self.draw and ctx.became_present:
                 os.makedirs(self.save_dir, exist_ok=True)
                 img_path = os.path.join(self.save_dir, f"snapshot_{int(ctx.now*1000)}.jpg")
                 try:
                     _save_snapshot(img_path, ctx.frame, ctx.dets, self.draw_ids, self.conf_thresh)
                 except Exception:
                     img_path = None
+            
+            self.alert.add(ids, best_conf=best, now=ctx.now, rearm_sec=self.rearm_sec, frame_img_path=img_path)
+
+        # if due, flush window (even if scene is now empty)
+        if self.alert.due(ctx.now):
+            count, best, img_path = self.alert.flush(ctx.now)
+            ctx.alert_count = count
+            ctx.alert_best_conf = best
             ctx.snapshot_path = img_path
 
             # send

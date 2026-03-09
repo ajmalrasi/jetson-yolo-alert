@@ -9,7 +9,7 @@ class AlertPolicy:
     pending_best: float = 0.0
     last_by_id: Dict[int, float] = field(default_factory=dict)  # id -> last alert time
 
-    def add(self, ids: Iterable[int], best_conf: float, now: float, rearm_sec: float):
+    def add(self, ids: Iterable[int], best_conf: float, now: float, rearm_sec: float, frame_img_path: str = None):
         added_any = False
         for i in ids:
             last = self.last_by_id.get(i, -1e9)
@@ -18,15 +18,19 @@ class AlertPolicy:
                 added_any = True
         if added_any:
             self.pending_best = max(self.pending_best, best_conf)
+            if frame_img_path and not getattr(self, "pending_img_path", None):
+                self.pending_img_path = frame_img_path
 
     def due(self, now: float) -> bool:
         return bool(self.pending_ids) and (now - self.last_sent) >= self.window_sec
 
-    def flush(self, now: float) -> tuple[int, float]:
+    def flush(self, now: float) -> tuple[int, float, str]:
         n, b = len(self.pending_ids), self.pending_best
+        img = getattr(self, "pending_img_path", None)
         for i in list(self.pending_ids):
             self.last_by_id[i] = now
         self.pending_ids.clear()
         self.pending_best = 0.0
+        self.pending_img_path = None
         self.last_sent = now
-        return n, b
+        return n, b, img
