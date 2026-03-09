@@ -107,7 +107,7 @@ class DetectStep(PipelineStep):
             return ctx
 
         try:
-            dets = self.det.detect(ctx.frame.image)
+            dets = self.det.detect(ctx.frame)
             if self.tracker:
                 dets = self.tracker.update(ctx.frame, dets)
             ctx.dets = dets
