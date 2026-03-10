@@ -38,7 +38,7 @@ def main():
         boost_arm_frames=cfg.boost_arm_frames, boost_min_sec=cfg.boost_min_sec,
         cooldown_sec=cfg.cooldown_sec, base_stride=cfg.vid_stride
     )
-    alerts = AlertPolicy(window_sec=cfg.rate_window_sec)
+    alerts = AlertPolicy(window_sec=cfg.rate_window_sec, cooldown_sec=cfg.alert_cooldown_sec)
 
     pipe = Pipeline(
         cfg=cfg,
