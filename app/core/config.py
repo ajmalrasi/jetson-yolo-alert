@@ -37,6 +37,8 @@ class Config:
     min_persist_sec: float = float(os.getenv("MIN_PERSIST_SEC", "1.0"))
     rearm_sec: float = float(os.getenv("REARM_SEC", "10"))
     rate_window_sec: float = float(os.getenv("RATE_WINDOW_SEC", "5"))
+    # Min time between any two alerts (stops same person with new track_id from re-triggering)
+    alert_cooldown_sec: float = float(os.getenv("ALERT_COOLDOWN_SEC", "0"))  # 0 = use rate_window_sec only
     # Tracker
     tracker_cfg: Optional[str] = os.getenv("TRACKER", "bytetrack.yaml")
     tracker_on: bool = os.getenv("TRACKER_ON", "1") not in ("0", "false", "False", "")
