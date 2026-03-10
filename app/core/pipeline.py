@@ -156,12 +156,12 @@ class AlertStep(PipelineStep):
     telemetry: Telemetry
 
     def run(self, ctx: Ctx) -> Ctx:
-        # accumulate alerts only when presence persistence conditions are met
-        if ctx.became_present or (ctx.state.present and ctx.trigger_dets):
+        # accumulate alerts whenever we see triggers (presence policy still tracks state separately)
+        if ctx.trigger_dets:
             ids = [d.track_id for d in ctx.trigger_dets if d.track_id is not None] or [-1]
             best = max(d.conf for d in ctx.trigger_dets) if ctx.trigger_dets else 0.0
-            
-            # take a snapshot at the moment of detection (if drawing is enabled)
+
+            # take a snapshot at the moment of first becoming present (if drawing is enabled)
             img_path = None
             if ctx.frame is not None and self.draw and ctx.became_present:
                 os.makedirs(self.save_dir, exist_ok=True)
@@ -170,7 +170,7 @@ class AlertStep(PipelineStep):
                     _save_snapshot(img_path, ctx.frame, ctx.dets, self.draw_ids, self.conf_thresh)
                 except Exception:
                     img_path = None
-            
+
             self.alert.add(ids, best_conf=best, now=ctx.now, rearm_sec=self.rearm_sec, frame_img_path=img_path)
 
         # if due, flush window (even if scene is now empty)
