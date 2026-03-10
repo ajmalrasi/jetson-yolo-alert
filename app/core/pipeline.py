@@ -161,9 +161,9 @@ class AlertStep(PipelineStep):
             ids = [d.track_id for d in ctx.trigger_dets if d.track_id is not None] or [-1]
             best = max(d.conf for d in ctx.trigger_dets) if ctx.trigger_dets else 0.0
 
-            # take a snapshot at the moment of first becoming present (if drawing is enabled)
+            # take a snapshot when we have trigger detections (if drawing is enabled)
             img_path = None
-            if ctx.frame is not None and self.draw and ctx.became_present:
+            if ctx.frame is not None and self.draw:
                 os.makedirs(self.save_dir, exist_ok=True)
                 img_path = os.path.join(self.save_dir, f"snapshot_{int(ctx.now*1000)}.jpg")
                 try:
