@@ -56,4 +56,11 @@ Use this file to track what you want to do. Mark items when you start or finish 
 
 ---
 
+## LLM Q&A
+
+- [ ] **LLM-powered Q&A** – Answer questions like "How many people came on March 10?" using stored alert history + an LLM.  
+  **Plan:** [docs/PLAN_LLM_QA.md](docs/PLAN_LLM_QA.md) (data layer → LLM client → QA service → CLI / Telegram).
+
+---
+
 *Last updated: 2026-02-26*
