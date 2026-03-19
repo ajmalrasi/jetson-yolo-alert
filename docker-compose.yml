@@ -76,3 +76,22 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw   # X11 socket
     command: python3 -m app.app.preview
 
+  ask-telegram:
+    image: jetson-yolo:local
+    runtime: nvidia
+    network_mode: host
+    env_file:
+      - .env
+    working_dir: /workspace
+    volumes:
+      - ./work:/workspace/work
+    restart: unless-stopped
+    depends_on:
+      - jetson-yolo
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    command: python3 -m app.app.ask_telegram
+
