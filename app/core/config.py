@@ -45,6 +45,9 @@ class Config:
     # Telegram (TELEGRAM_* or TG_BOT/TG_CHAT from README)
     tg_token: Optional[str] = os.getenv("TELEGRAM_TOKEN") or os.getenv("TG_BOT")
     tg_chat: Optional[str] = os.getenv("TELEGRAM_CHAT_ID") or os.getenv("TG_CHAT")
+    tg_qa_allowed_chat_id: Optional[str] = os.getenv("TG_QA_ALLOWED_CHAT_ID")
+    tg_qa_poll_timeout_sec: int = int(os.getenv("TG_QA_POLL_TIMEOUT_SEC", "25"))
+    tg_qa_idle_sleep_sec: float = float(os.getenv("TG_QA_IDLE_SLEEP_SEC", "1"))
     # Misc
     save_dir: str = os.getenv("SAVE_DIR", "/workspace/work/alerts")
     draw: bool = os.getenv("DRAW", "1") not in ("0","false","False","")

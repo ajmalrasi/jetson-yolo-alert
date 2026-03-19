@@ -39,6 +39,9 @@ Includes services for model export, live preview, and alerting (e.g., Telegram n
 | `TRACKER_ON` | `1` | Enable tracking. |
 | `TELEGRAM_TOKEN` | *(none)* | Telegram bot token (also accepts `TG_BOT`). |
 | `TELEGRAM_CHAT_ID`| *(none)* | Telegram chat ID (also accepts `TG_CHAT`). |
+| `TG_QA_ALLOWED_CHAT_ID` | *(none)* | Optional chat allow-list for Telegram Q&A bot (defaults to `TELEGRAM_CHAT_ID` if set). |
+| `TG_QA_POLL_TIMEOUT_SEC` | `25` | Long-poll timeout for Telegram Q&A bot updates. |
+| `TG_QA_IDLE_SLEEP_SEC` | `1` | Idle backoff when no Telegram updates are available. |
 | `SAVE_DIR` | `/workspace/work/alerts`| Directory to save alert snapshots. |
 | `ALERT_DB_PATH` | `/workspace/work/alerts/alert_history.db` | SQLite file for alert history storage and Q&A. |
 | `LLM_PROVIDER` | `none` | LLM backend for Q&A (`none` or `openai`). |
@@ -167,6 +170,14 @@ Ask alert-history questions from CLI:
 python -m app.tools.ask "How many people came on 2026-03-10?"
 python -m app.tools.ask "When was the last alert?"
 ```
+
+Run Telegram Q&A bot (`/ask ...`) using the same QA service:
+
+```bash
+python -m app.app.ask_telegram
+```
+
+This is transport-modular: Telegram is only an adapter. You can add a WhatsApp adapter later and reuse the same command handler + QA service.
 
 ---
 
