@@ -45,6 +45,16 @@ class PipelineStep(Protocol):
 def _names_to_ids(names: Set[str], name2id: dict[str, int]) -> Set[int]:
     return {name2id[n] for n in names if n in name2id}
 
+def _build_alert_message(count: int, best: float, trigger_class_names: Set[str]) -> str:
+    noun = "object" if count == 1 else "objects"
+    classes = ", ".join(sorted(trigger_class_names)) if trigger_class_names else "configured trigger classes"
+    return (
+        "Alert detected\n"
+        f"- Triggered: {count} {noun}\n"
+        f"- Best confidence: {best:.2f}\n"
+        f"- Trigger classes: {classes}"
+    )
+
 def _save_snapshot(path: str, frame: Frame, dets: Sequence[Detection], draw_ids: Set[int], conf: float):
     img = frame.image.copy()
     keep = [d for d in dets if d.conf >= conf and (d.cls_id in draw_ids if draw_ids else True)]
@@ -153,6 +163,7 @@ class AlertStep(PipelineStep):
     draw_ids: Set[int]
     conf_thresh: float
     draw: bool
+    trigger_class_names: Set[str]
     telemetry: Telemetry
 
     def run(self, ctx: Ctx) -> Ctx:
@@ -193,7 +204,7 @@ class AlertStep(PipelineStep):
 
             # send
             try:
-                msg = f"Alert: {count} object(s) (best={best:.2f})"
+                msg = _build_alert_message(count, best, self.trigger_class_names)
                 self.sink.send(msg, image_path=img_path)
                 if self.event_bus:
                     from .events import AlertIssued
@@ -271,7 +282,7 @@ class Pipeline:
                 alert=self.alerts, sink=self.sink, event_bus=self.event_bus,
                 rearm_sec=self.cfg.rearm_sec, save_dir=self.cfg.save_dir,
                 draw_ids=self._draw_ids, conf_thresh=self.cfg.conf_thresh,
-                draw=self.cfg.draw, telemetry=self.telemetry
+                draw=self.cfg.draw, trigger_class_names=self.cfg.trigger_classes, telemetry=self.telemetry
             ),
             TelemetryStep(telemetry=self.telemetry),
         ]
