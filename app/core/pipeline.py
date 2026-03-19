@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Optional, Sequence, Protocol, Iterable, Any, Set
+from typing import Optional, Sequence, Protocol, Iterable, Any, Set, TYPE_CHECKING
 import os, cv2
 
 from .ports import Detection, Frame, Detector, ITracker, Camera, AlertSink, EventBus, Telemetry
@@ -10,6 +10,9 @@ from .presence_policy import PresencePolicy
 from .alert_policy import AlertPolicy
 from .clock import Clock
 from .config import Config
+
+if TYPE_CHECKING:
+    from .alert_history import AlertHistoryStore
 
 # ------------------------------
 # Context passed through steps
@@ -174,6 +177,7 @@ class AlertStep(PipelineStep):
     draw: bool
     class_names_by_id: dict[int, str]
     telemetry: Telemetry
+    history: Optional["AlertHistoryStore"] = None
 
     def run(self, ctx: Ctx) -> Ctx:
         # accumulate alerts whenever we see triggers (presence policy still tracks state separately)
@@ -220,6 +224,20 @@ class AlertStep(PipelineStep):
             ctx.alert_count = count
             ctx.alert_best_conf = best
             ctx.snapshot_path = img_path
+
+            if self.history:
+                try:
+                    self.history.insert_alert(
+                        ts=ctx.now,
+                        count=count,
+                        best_conf=best,
+                        image_path=img_path,
+                        trigger_classes=frame_classes,
+                        context_classes=context_classes,
+                    )
+                except Exception as e:
+                    self.telemetry.incr("alert_history_errors")
+                    self.telemetry.gauge("last_alert_history_exc", 1.0, msg=str(e))
 
             # send
             try:
@@ -271,8 +289,18 @@ class Pipeline:
     sink: AlertSink
     telemetry: Telemetry
     event_bus: Optional[EventBus] = None
+    alert_history: Optional["AlertHistoryStore"] = None
 
     def __post_init__(self):
+        if self.alert_history is None:
+            try:
+                from .alert_history import AlertHistoryStore
+
+                self.alert_history = AlertHistoryStore(self.cfg.alert_db_path)
+            except Exception as e:
+                self.alert_history = None
+                self.telemetry.incr("alert_history_init_errors")
+                self.telemetry.gauge("last_alert_history_init_exc", 1.0, msg=str(e))
 
         # Build name→id map from the active detector's labels
         labels = getattr(self.detector, "labels", None)
@@ -303,7 +331,8 @@ class Pipeline:
                 draw_ids=self._draw_ids, conf_thresh=self.cfg.conf_thresh,
                 draw=self.cfg.draw,
                 class_names_by_id={v: k for k, v in self._name2id.items()},
-                telemetry=self.telemetry
+                telemetry=self.telemetry,
+                history=self.alert_history,
             ),
             TelemetryStep(telemetry=self.telemetry),
         ]

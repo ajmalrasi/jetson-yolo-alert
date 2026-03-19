@@ -48,3 +48,12 @@ class Config:
     # Misc
     save_dir: str = os.getenv("SAVE_DIR", "/workspace/work/alerts")
     draw: bool = os.getenv("DRAW", "1") not in ("0","false","False","")
+    # Alert history / LLM QA
+    alert_db_path: str = os.getenv(
+        "ALERT_DB_PATH",
+        os.path.join(os.getenv("SAVE_DIR", "/workspace/work/alerts"), "alert_history.db"),
+    )
+    llm_provider: str = os.getenv("LLM_PROVIDER", "none").strip().lower()
+    llm_model: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    openai_api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
+    openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
