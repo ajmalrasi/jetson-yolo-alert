@@ -134,6 +134,22 @@ Run commands inside the base container interactively:
 docker compose run --rm jetson-yolo bash
 ```
 
+Run unit tests locally (host) using the fixed venv path:
+
+```bash
+./scripts/test_local.sh
+```
+
+Equivalent Make target:
+
+```bash
+make test
+```
+
+Notes:
+* Uses `/home/ajmalrasi/jetson/bin/python`.
+* Sets `SAVE_DIR=/tmp` by default to avoid host permission issues from `/workspace/...` defaults.
+
 Example YOLOv8 prediction test:
 
 ```bash

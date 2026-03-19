@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: up sh build-engine preview alert down
+.PHONY: up sh build-engine preview alert down test
 
 up:
 	docker compose up -d
@@ -27,3 +27,6 @@ alert: up
 
 down:
 	docker compose down -v
+
+test:
+	./scripts/test_local.sh

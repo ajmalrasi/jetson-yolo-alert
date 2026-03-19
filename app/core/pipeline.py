@@ -160,6 +160,8 @@ class AlertStep(PipelineStep):
         if ctx.trigger_dets:
             ids = [d.track_id for d in ctx.trigger_dets if d.track_id is not None] or [-1]
             best = max(d.conf for d in ctx.trigger_dets) if ctx.trigger_dets else 0.0
+            frame_count = len(ctx.trigger_dets)
+            frame_best = best
 
             # take a snapshot when we have trigger detections (if drawing is enabled)
             img_path = None
@@ -167,11 +169,20 @@ class AlertStep(PipelineStep):
                 os.makedirs(self.save_dir, exist_ok=True)
                 img_path = os.path.join(self.save_dir, f"snapshot_{int(ctx.now*1000)}.jpg")
                 try:
-                    _save_snapshot(img_path, ctx.frame, ctx.dets, self.draw_ids, self.conf_thresh)
+                    # Draw trigger detections only so image content aligns with trigger count.
+                    _save_snapshot(img_path, ctx.frame, ctx.trigger_dets, set(), 0.0)
                 except Exception:
                     img_path = None
 
-            self.alert.add(ids, best_conf=best, now=ctx.now, rearm_sec=self.rearm_sec, frame_img_path=img_path)
+            self.alert.add(
+                ids,
+                best_conf=best,
+                now=ctx.now,
+                rearm_sec=self.rearm_sec,
+                frame_img_path=img_path,
+                frame_count=frame_count,
+                frame_best_conf=frame_best,
+            )
 
         # if due, flush window (even if scene is now empty)
         if self.alert.due(ctx.now):
