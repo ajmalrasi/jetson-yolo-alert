@@ -12,6 +12,7 @@ def test_flush_uses_latest_snapshot_metadata_when_available():
         frame_img_path="/tmp/a.jpg",
         frame_count=1,
         frame_best_conf=0.60,
+        frame_class_names={"person"},
     )
     policy.add(
         ids=[2],
@@ -21,12 +22,14 @@ def test_flush_uses_latest_snapshot_metadata_when_available():
         frame_img_path="/tmp/b.jpg",
         frame_count=2,
         frame_best_conf=0.90,
+        frame_class_names={"person", "dog"},
     )
 
-    count, best, img = policy.flush(now=1.5)
+    count, best, img, classes = policy.flush(now=1.5)
     assert count == 2
     assert best == 0.90
     assert img == "/tmp/b.jpg"
+    assert classes == {"person", "dog"}
 
 
 def test_flush_falls_back_to_aggregated_count_without_snapshot():
@@ -34,7 +37,8 @@ def test_flush_falls_back_to_aggregated_count_without_snapshot():
     policy.add(ids=[1], best_conf=0.70, now=0.0, rearm_sec=0.0)
     policy.add(ids=[2], best_conf=0.80, now=0.1, rearm_sec=0.0)
 
-    count, best, img = policy.flush(now=1.2)
+    count, best, img, classes = policy.flush(now=1.2)
     assert count == 2
     assert best == 0.80
     assert img is None
+    assert classes == set()

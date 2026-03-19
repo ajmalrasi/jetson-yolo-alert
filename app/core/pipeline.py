@@ -47,12 +47,12 @@ def _names_to_ids(names: Set[str], name2id: dict[str, int]) -> Set[int]:
 
 def _build_alert_message(count: int, best: float, trigger_class_names: Set[str]) -> str:
     noun = "object" if count == 1 else "objects"
-    classes = ", ".join(sorted(trigger_class_names)) if trigger_class_names else "configured trigger classes"
+    classes = ", ".join(sorted(trigger_class_names)) if trigger_class_names else "unknown"
     return (
         "Alert detected\n"
         f"- Triggered: {count} {noun}\n"
         f"- Best confidence: {best:.2f}\n"
-        f"- Trigger classes: {classes}"
+        f"- Triggered classes: {classes}"
     )
 
 def _save_snapshot(path: str, frame: Frame, dets: Sequence[Detection], draw_ids: Set[int], conf: float):
@@ -163,7 +163,7 @@ class AlertStep(PipelineStep):
     draw_ids: Set[int]
     conf_thresh: float
     draw: bool
-    trigger_class_names: Set[str]
+    class_names_by_id: dict[int, str]
     telemetry: Telemetry
 
     def run(self, ctx: Ctx) -> Ctx:
@@ -173,6 +173,9 @@ class AlertStep(PipelineStep):
             best = max(d.conf for d in ctx.trigger_dets) if ctx.trigger_dets else 0.0
             frame_count = len(ctx.trigger_dets)
             frame_best = best
+            frame_classes = {
+                self.class_names_by_id.get(d.cls_id, f"class_{d.cls_id}") for d in ctx.trigger_dets
+            }
 
             # take a snapshot when we have trigger detections (if drawing is enabled)
             img_path = None
@@ -193,18 +196,19 @@ class AlertStep(PipelineStep):
                 frame_img_path=img_path,
                 frame_count=frame_count,
                 frame_best_conf=frame_best,
+                frame_class_names=frame_classes,
             )
 
         # if due, flush window (even if scene is now empty)
         if self.alert.due(ctx.now):
-            count, best, img_path = self.alert.flush(ctx.now)
+            count, best, img_path, frame_classes = self.alert.flush(ctx.now)
             ctx.alert_count = count
             ctx.alert_best_conf = best
             ctx.snapshot_path = img_path
 
             # send
             try:
-                msg = _build_alert_message(count, best, self.trigger_class_names)
+                msg = _build_alert_message(count, best, frame_classes)
                 self.sink.send(msg, image_path=img_path)
                 if self.event_bus:
                     from .events import AlertIssued
@@ -282,7 +286,9 @@ class Pipeline:
                 alert=self.alerts, sink=self.sink, event_bus=self.event_bus,
                 rearm_sec=self.cfg.rearm_sec, save_dir=self.cfg.save_dir,
                 draw_ids=self._draw_ids, conf_thresh=self.cfg.conf_thresh,
-                draw=self.cfg.draw, trigger_class_names=self.cfg.trigger_classes, telemetry=self.telemetry
+                draw=self.cfg.draw,
+                class_names_by_id={v: k for k, v in self._name2id.items()},
+                telemetry=self.telemetry
             ),
             TelemetryStep(telemetry=self.telemetry),
         ]
