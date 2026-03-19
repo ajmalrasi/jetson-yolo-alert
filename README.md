@@ -40,6 +40,11 @@ Includes services for model export, live preview, and alerting (e.g., Telegram n
 | `TELEGRAM_TOKEN` | *(none)* | Telegram bot token (also accepts `TG_BOT`). |
 | `TELEGRAM_CHAT_ID`| *(none)* | Telegram chat ID (also accepts `TG_CHAT`). |
 | `SAVE_DIR` | `/workspace/work/alerts`| Directory to save alert snapshots. |
+| `ALERT_DB_PATH` | `/workspace/work/alerts/alert_history.db` | SQLite file for alert history storage and Q&A. |
+| `LLM_PROVIDER` | `none` | LLM backend for Q&A (`none` or `openai`). |
+| `LLM_MODEL` | `gpt-4o-mini` | Model name used by the selected LLM provider. |
+| `OPENAI_API_KEY` | *(none)* | OpenAI API key used when `LLM_PROVIDER=openai`. |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API base URL. |
 | `DRAW` | `1` | Enable drawing bounding boxes on snapshots. |
 | `USE_GSTREAMER` | `0` | Enable GStreamer backend instead of FFmpeg for RTSP. |
 | `RTSP_LATENCY_MS` | `200` | Latency buffer for RTSP streams. |
@@ -154,6 +159,13 @@ Example YOLOv8 prediction test:
 
 ```bash
 yolo predict source="$SRC" model="$YOLO_ENGINE" device=0
+```
+
+Ask alert-history questions from CLI:
+
+```bash
+python -m app.tools.ask "How many people came on 2026-03-10?"
+python -m app.tools.ask "When was the last alert?"
 ```
 
 ---
