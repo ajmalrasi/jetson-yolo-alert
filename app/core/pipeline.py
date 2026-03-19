@@ -45,15 +45,24 @@ class PipelineStep(Protocol):
 def _names_to_ids(names: Set[str], name2id: dict[str, int]) -> Set[int]:
     return {name2id[n] for n in names if n in name2id}
 
-def _build_alert_message(count: int, best: float, trigger_class_names: Set[str]) -> str:
+def _build_alert_message(
+    count: int,
+    best: float,
+    trigger_class_names: Set[str],
+    context_class_names: Set[str],
+) -> str:
     noun = "object" if count == 1 else "objects"
     classes = ", ".join(sorted(trigger_class_names)) if trigger_class_names else "unknown"
-    return (
+    msg = (
         "Alert detected\n"
         f"- Triggered: {count} {noun}\n"
         f"- Best confidence: {best:.2f}\n"
         f"- Triggered classes: {classes}"
     )
+    if context_class_names:
+        context = ", ".join(sorted(context_class_names))
+        msg += f"\n- Context classes in image: {context}"
+    return msg
 
 def _save_snapshot(path: str, frame: Frame, dets: Sequence[Detection], draw_ids: Set[int], conf: float):
     img = frame.image.copy()
@@ -176,6 +185,11 @@ class AlertStep(PipelineStep):
             frame_classes = {
                 self.class_names_by_id.get(d.cls_id, f"class_{d.cls_id}") for d in ctx.trigger_dets
             }
+            frame_context_classes = {
+                self.class_names_by_id.get(d.cls_id, f"class_{d.cls_id}")
+                for d in ctx.dets
+                if d.conf >= self.conf_thresh and (d.cls_id in self.draw_ids if self.draw_ids else True)
+            }
 
             # take a snapshot when we have trigger detections (if drawing is enabled)
             img_path = None
@@ -183,8 +197,8 @@ class AlertStep(PipelineStep):
                 os.makedirs(self.save_dir, exist_ok=True)
                 img_path = os.path.join(self.save_dir, f"snapshot_{int(ctx.now*1000)}.jpg")
                 try:
-                    # Draw trigger detections only so image content aligns with trigger count.
-                    _save_snapshot(img_path, ctx.frame, ctx.trigger_dets, set(), 0.0)
+                    # Draw configured context classes for richer snapshots.
+                    _save_snapshot(img_path, ctx.frame, ctx.dets, self.draw_ids, self.conf_thresh)
                 except Exception:
                     img_path = None
 
@@ -197,18 +211,19 @@ class AlertStep(PipelineStep):
                 frame_count=frame_count,
                 frame_best_conf=frame_best,
                 frame_class_names=frame_classes,
+                frame_context_class_names=frame_context_classes,
             )
 
         # if due, flush window (even if scene is now empty)
         if self.alert.due(ctx.now):
-            count, best, img_path, frame_classes = self.alert.flush(ctx.now)
+            count, best, img_path, frame_classes, context_classes = self.alert.flush(ctx.now)
             ctx.alert_count = count
             ctx.alert_best_conf = best
             ctx.snapshot_path = img_path
 
             # send
             try:
-                msg = _build_alert_message(count, best, frame_classes)
+                msg = _build_alert_message(count, best, frame_classes, context_classes)
                 self.sink.send(msg, image_path=img_path)
                 if self.event_bus:
                     from .events import AlertIssued
