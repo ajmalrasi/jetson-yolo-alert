@@ -1,12 +1,33 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-import calendar
+from datetime import datetime
+import json
 import re
-from typing import Optional, Protocol
+import sqlite3
+from typing import Any, List, Optional, Protocol
+from zoneinfo import ZoneInfo
 
 from .alert_history import AlertHistoryStore
+
+IST = ZoneInfo("Asia/Kolkata")
+
+MAX_ROWS = 50
+SQL_TIMEOUT_SEC = 5
+
+SCHEMA_DESCRIPTION = """
+Table: alerts
+Columns:
+  id            INTEGER PRIMARY KEY AUTOINCREMENT
+  ts            TEXT NOT NULL   -- ISO-8601 UTC timestamp of the alert
+  count         INTEGER NOT NULL -- number of detected objects in this alert
+  best_conf     REAL NOT NULL   -- highest detection confidence (0.0–1.0)
+  image_path    TEXT            -- file path to snapshot image (may be NULL)
+  trigger_classes TEXT NOT NULL DEFAULT '[]'  -- JSON array of class names that triggered the alert, e.g. '["person","dog"]'
+  context_classes TEXT NOT NULL DEFAULT '[]'  -- JSON array of all class names visible in the scene
+
+Index: idx_alerts_ts on ts
+""".strip()
 
 
 class LLMClient(Protocol):
@@ -23,126 +44,155 @@ class QAService:
         if not clean_q:
             return "Please provide a question."
 
-        q_lower = clean_q.lower()
-        if "last alert" in q_lower:
-            return self._answer_last_alert(clean_q)
-
-        day = _extract_day(clean_q, now_utc=datetime.now(timezone.utc))
-        if day is None:
-            return (
-                "I could not find a specific date in your question. "
-                "Try a date like '2026-03-10', 'March 10', or use 'last alert'."
-            )
-
-        rows = self.history.get_alerts_on_date(day.strftime("%Y-%m-%d"))
-        alert_events = len(rows)
-        total_objects = sum(r.count for r in rows)
-        best_conf = max((r.best_conf for r in rows), default=0.0)
-
-        if alert_events == 0:
-            return f"No alerts were recorded on {day.date().isoformat()} (UTC)."
-
-        summary = (
-            f"date={day.date().isoformat()} UTC\n"
-            f"alerts={alert_events}\n"
-            f"total_detected_objects={total_objects}\n"
-            f"best_confidence={best_conf:.2f}"
-        )
-        default_answer = (
-            f"On {day.date().isoformat()} (UTC), there were {alert_events} alerts "
-            f"with a total of {total_objects} detected objects."
-        )
-        return self._format_with_llm(question=clean_q, summary=summary, default_answer=default_answer)
-
-    def _answer_last_alert(self, question: str) -> str:
-        last = self.history.get_last_alert()
-        if last is None:
-            return "No alerts have been recorded yet."
-
-        ts = last.ts.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        trigger_classes = ", ".join(last.trigger_classes) if last.trigger_classes else "-"
-        context_classes = ", ".join(last.context_classes) if last.context_classes else "-"
-        summary = (
-            f"last_alert_at={ts}\n"
-            f"detected_objects={last.count}\n"
-            f"best_confidence={last.best_conf:.2f}\n"
-            f"trigger_classes={trigger_classes}\n"
-            f"context_classes={context_classes}\n"
-            f"image_path={last.image_path or '-'}"
-        )
-        default_answer = (
-            f"The last alert was at {ts}, with {last.count} detected objects "
-            f"(best confidence {last.best_conf:.2f}, trigger classes: {trigger_classes})."
-        )
-        return self._format_with_llm(question=question, summary=summary, default_answer=default_answer)
-
-    def _format_with_llm(self, question: str, summary: str, default_answer: str) -> str:
         if self.llm is None:
-            return default_answer
+            return "LLM is not configured. Set LLM_PROVIDER and API key in .env to enable Q&A."
 
+        now_ist = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST")
+        sql = self._generate_sql(clean_q, now_ist)
+        if not sql:
+            return "I could not understand your question. Try rephrasing it."
+
+        rows, columns, error = _execute_readonly_sql(self.history.db_path, sql)
+        if error:
+            retry_sql = self._fix_sql(clean_q, sql, error, now_ist)
+            if retry_sql:
+                rows, columns, error = _execute_readonly_sql(self.history.db_path, retry_sql)
+            if error:
+                return f"I understood your question but the database query failed: {error}"
+
+        result_text = _format_result_table(columns, rows)
+        answer = self._generate_answer(clean_q, sql, result_text, now_ist)
+        return answer
+
+    def _generate_sql(self, question: str, now_ist: str) -> Optional[str]:
         system_prompt = (
-            "You answer questions about alert history using only provided facts. "
-            "Be concise, direct, and do not invent missing data."
+            "You are a SQL assistant. Given a user question about an alert history database, "
+            "write a single SQLite SELECT query to answer it.\n\n"
+            f"Database schema:\n{SCHEMA_DESCRIPTION}\n\n"
+            "Rules:\n"
+            "- ONLY write SELECT queries. No INSERT, UPDATE, DELETE, DROP, ALTER, etc.\n"
+            "- Timestamps (ts) are stored as ISO-8601 UTC strings.\n"
+            "- The user is in India (IST = UTC+5:30). Convert dates accordingly.\n"
+            "  For example, 'today' in IST means: ts >= '<IST midnight in UTC>' AND ts < '<IST next midnight in UTC>'\n"
+            "  IST midnight = UTC previous day 18:30:00\n"
+            "- trigger_classes and context_classes are JSON arrays stored as TEXT.\n"
+            "  To filter by class, use: trigger_classes LIKE '%\"car\"%' or json_each.\n"
+            f"- Limit results to {MAX_ROWS} rows.\n"
+            "- Return ONLY the SQL query, no explanation, no markdown fences."
         )
         user_message = (
-            f"User question:\n{question}\n\n"
-            f"Facts:\n{summary}\n\n"
-            "Write a one-sentence answer."
+            f"Current time: {now_ist}\n"
+            f"Question: {question}"
+        )
+        try:
+            raw = self.llm.complete(system_prompt=system_prompt, user_message=user_message)
+        except Exception:
+            return None
+        return _extract_sql(raw)
+
+    def _fix_sql(self, question: str, bad_sql: str, error: str, now_ist: str) -> Optional[str]:
+        system_prompt = (
+            "You are a SQL assistant. A previous query failed. "
+            "Fix the query based on the error.\n\n"
+            f"Database schema:\n{SCHEMA_DESCRIPTION}\n\n"
+            "Rules:\n"
+            "- ONLY write SELECT queries.\n"
+            f"- Limit results to {MAX_ROWS} rows.\n"
+            "- Return ONLY the fixed SQL query, no explanation."
+        )
+        user_message = (
+            f"Current time: {now_ist}\n"
+            f"Question: {question}\n"
+            f"Failed SQL: {bad_sql}\n"
+            f"Error: {error}"
+        )
+        try:
+            raw = self.llm.complete(system_prompt=system_prompt, user_message=user_message)
+        except Exception:
+            return None
+        return _extract_sql(raw)
+
+    def _generate_answer(self, question: str, sql: str, result_text: str, now_ist: str) -> str:
+        system_prompt = (
+            "You answer questions about an alert/detection history database. "
+            "You are given the user's question, the SQL query that was run, and the results. "
+            "Write a clear, concise, helpful answer using the data. "
+            "Use India time (IST) for all timestamps. "
+            "Do not show SQL or technical details. "
+            "If the result is empty, say so clearly."
+        )
+        user_message = (
+            f"Current time: {now_ist}\n"
+            f"Question: {question}\n\n"
+            f"SQL executed:\n{sql}\n\n"
+            f"Results:\n{result_text}"
         )
         try:
             answer = self.llm.complete(system_prompt=system_prompt, user_message=user_message)
         except Exception:
-            return default_answer
-        return answer or default_answer
+            return result_text if result_text.strip() else "Query returned no results."
+        return answer or result_text
 
 
-def _extract_day(question: str, now_utc: datetime) -> Optional[datetime]:
-    q = question.strip().lower()
-
-    if "today" in q:
-        return now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
-    if "yesterday" in q:
-        day = now_utc - timedelta(days=1)
-        return day.replace(hour=0, minute=0, second=0, microsecond=0)
-
-    iso_match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", q)
-    if iso_match:
-        try:
-            day = datetime.strptime(iso_match.group(1), "%Y-%m-%d")
-            return day.replace(tzinfo=timezone.utc)
-        except ValueError:
-            pass
-
-    month_names = list(calendar.month_name)[1:]
-    short_months = list(calendar.month_abbr)[1:]
-    all_month_tokens = sorted(month_names + short_months, key=len, reverse=True)
-    month_pattern = "|".join(re.escape(m.lower()) for m in all_month_tokens)
-    long_match = re.search(rf"\b({month_pattern})\s+(\d{{1,2}})(?:,?\s+(\d{{4}}))?\b", q)
-    if not long_match:
+def _extract_sql(raw: str) -> Optional[str]:
+    text = (raw or "").strip()
+    if not text:
         return None
 
-    month_token = long_match.group(1).lower()
-    day_token = int(long_match.group(2))
-    year_token = int(long_match.group(3)) if long_match.group(3) else now_utc.year
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:sql)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+        text = text.strip()
 
-    month_num = _month_to_number(month_token)
-    if month_num is None:
+    if not text.upper().lstrip().startswith("SELECT"):
+        match = re.search(r"(SELECT\s.+)", text, re.IGNORECASE | re.DOTALL)
+        if match:
+            text = match.group(1).strip()
+        else:
+            return None
+
+    text = text.rstrip(";").strip()
+
+    forbidden = re.compile(
+        r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|ATTACH|DETACH|PRAGMA|VACUUM|REINDEX)\b",
+        re.IGNORECASE,
+    )
+    if forbidden.search(text):
         return None
+
+    return text
+
+
+def _execute_readonly_sql(
+    db_path: str, sql: str
+) -> tuple[List[tuple], List[str], Optional[str]]:
     try:
-        return datetime(year_token, month_num, day_token, tzinfo=timezone.utc)
-    except ValueError:
-        return None
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=SQL_TIMEOUT_SEC)
+        conn.row_factory = None
+        cursor = conn.execute(sql)
+        columns = [desc[0] for desc in cursor.description] if cursor.description else []
+        rows = cursor.fetchmany(MAX_ROWS)
+        conn.close()
+        return rows, columns, None
+    except Exception as e:
+        return [], [], str(e)
 
 
-def _month_to_number(token: str) -> Optional[int]:
-    for idx, name in enumerate(calendar.month_name):
-        if idx == 0:
-            continue
-        if token == name.lower():
-            return idx
-    for idx, name in enumerate(calendar.month_abbr):
-        if idx == 0:
-            continue
-        if token == name.lower():
-            return idx
-    return None
+def _format_result_table(columns: List[str], rows: List[tuple]) -> str:
+    if not rows:
+        return "(no results)"
+
+    lines = [" | ".join(columns)]
+    lines.append("-+-".join("-" * max(len(c), 5) for c in columns))
+    for row in rows:
+        lines.append(" | ".join(_fmt_cell(v) for v in row))
+
+    if len(rows) >= MAX_ROWS:
+        lines.append(f"... (limited to {MAX_ROWS} rows)")
+    return "\n".join(lines)
+
+
+def _fmt_cell(value: Any) -> str:
+    if value is None:
+        return "-"
+    return str(value)

@@ -78,16 +78,12 @@ services:
 
   ask-telegram:
     image: jetson-yolo:local
-    runtime: nvidia
-    network_mode: host
     env_file:
       - .env
     working_dir: /workspace
     volumes:
       - ./work:/workspace/work
     restart: unless-stopped
-    depends_on:
-      - jetson-yolo
     logging:
       driver: json-file
       options:
