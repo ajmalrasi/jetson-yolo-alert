@@ -82,28 +82,35 @@ class QAService:
                 return f"No {filter_str} alerts were recorded on {date_str} (IST)."
             return f"No alerts were recorded on {date_str} (IST)."
 
+        alert_lines = []
+        for r in rows:
+            t = r.ts.astimezone(IST).strftime("%H:%M:%S IST")
+            classes = ", ".join(r.trigger_classes) if r.trigger_classes else "-"
+            alert_lines.append(f"  {t} | {r.count} objects | classes: {classes}")
+        timeline = "\n".join(alert_lines)
+
         summary = (
             f"date={date_str} IST\n"
             f"alerts={alert_events}\n"
             f"total_detected_objects={total_objects}\n"
             f"best_confidence={best_conf:.2f}\n"
             f"trigger_classes={trigger_str}\n"
-            f"context_classes={context_str}"
+            f"context_classes={context_str}\n"
+            f"timeline:\n{timeline}"
         )
         if filter_str:
             summary += f"\nfiltered_by_class={filter_str}"
 
         if filter_str:
             default_answer = (
-                f"On {date_str} (IST), there were {alert_events} alerts involving {filter_str}, "
-                f"with a total of {total_objects} detected objects. "
-                f"Trigger classes: {trigger_str}. Context classes: {context_str}."
+                f"On {date_str} (IST), there were {alert_events} alerts involving {filter_str}:\n"
+                f"{timeline}"
             )
         else:
             default_answer = (
                 f"On {date_str} (IST), there were {alert_events} alerts "
-                f"with a total of {total_objects} detected objects. "
-                f"Trigger classes: {trigger_str}. Context classes: {context_str}."
+                f"with a total of {total_objects} detected objects:\n"
+                f"{timeline}"
             )
         return self._format_with_llm(question=clean_q, summary=summary, default_answer=default_answer)
 

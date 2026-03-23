@@ -41,8 +41,8 @@ def test_iso_date_query_uses_ist_day_window(tmp_path):
     assert "On 2026-03-19 (IST)" in answer
     assert "1 alerts" in answer
     assert "2 detected objects" in answer
-    assert "Trigger classes: person" in answer
-    assert "Context classes: car, person" in answer
+    assert "classes: person" in answer
+    assert "01:30:00 IST" in answer
 
 
 def test_llm_infers_date_when_natural_phrase_has_no_explicit_date(tmp_path):
