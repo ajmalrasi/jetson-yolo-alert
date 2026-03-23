@@ -4,3 +4,10 @@ requests>=2.31.0
 numpy<2
 onnxslim>=0.1.59
 lap>=0.5.1
+litellm>=1.40
+langchain>=0.2
+langchain-community>=0.2
+langchain-openai>=0.1
+langgraph>=0.1
+sqlalchemy>=2.0
+python-telegram-bot>=21.0

@@ -1,7 +1,7 @@
 # Jetson YOLOv8 TensorRT Pipeline
 
 A Dockerized pipeline for running **YOLOv8 object detection** on NVIDIA Jetson devices using **TensorRT** for optimized inference.
-Includes services for model export, live preview, and alerting (e.g., Telegram notifications).
+Includes services for model export, live preview, alerting (Telegram notifications), and **LLM-powered natural-language Q&A** over alert history.
 
 ---
 
@@ -39,19 +39,39 @@ Includes services for model export, live preview, and alerting (e.g., Telegram n
 | `TRACKER_ON` | `1` | Enable tracking. |
 | `TELEGRAM_TOKEN` | *(none)* | Telegram bot token (also accepts `TG_BOT`). |
 | `TELEGRAM_CHAT_ID`| *(none)* | Telegram chat ID (also accepts `TG_CHAT`). |
-| `TG_QA_ALLOWED_CHAT_ID` | *(none)* | Optional chat allow-list for Telegram Q&A bot (defaults to `TELEGRAM_CHAT_ID` if set). |
-| `TG_QA_POLL_TIMEOUT_SEC` | `25` | Long-poll timeout for Telegram Q&A bot updates. |
-| `TG_QA_IDLE_SLEEP_SEC` | `1` | Idle backoff when no Telegram updates are available. |
+| `TG_QA_ALLOWED_CHAT_ID` | *(none)* | Restrict which chat can use the `/ask` Q&A bot. Defaults to `TELEGRAM_CHAT_ID`. |
 | `SAVE_DIR` | `/workspace/work/alerts`| Directory to save alert snapshots. |
 | `ALERT_DB_PATH` | `/workspace/work/alerts/alert_history.db` | SQLite file for alert history storage and Q&A. |
-| `LLM_PROVIDER` | `none` | LLM backend for Q&A (`none` or `openai`). |
-| `LLM_MODEL` | `gpt-4o-mini` | Model name used by the selected LLM provider. |
-| `OPENAI_API_KEY` | *(none)* | OpenAI API key used when `LLM_PROVIDER=openai`. |
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API base URL. |
+| `LLM_MODEL` | `none` | litellm model string (see **Supported LLM Providers** below). Set to `none` to disable Q&A. |
+| `OPENAI_API_KEY` | *(none)* | API key for OpenAI. Only needed when using an `openai/` model. |
 | `DRAW` | `1` | Enable drawing bounding boxes on snapshots. |
 | `USE_GSTREAMER` | `0` | Enable GStreamer backend instead of FFmpeg for RTSP. |
 | `RTSP_LATENCY_MS` | `200` | Latency buffer for RTSP streams. |
 | `CAP_PROP_BUFFERSIZE` | `2` | OpenCV capture buffer size. |
+
+---
+
+## 🤖 Supported LLM Providers
+
+The Q&A system uses [litellm](https://github.com/BerriAI/litellm) to route to 100+ LLM providers through a single `LLM_MODEL` variable.
+
+| Provider | `LLM_MODEL` value | Required env var |
+|---|---|---|
+| OpenAI | `openai/gpt-4o-mini` | `OPENAI_API_KEY` |
+| OpenAI (GPT-4o) | `openai/gpt-4o` | `OPENAI_API_KEY` |
+| Ollama (local) | `ollama/llama3` | `OLLAMA_API_BASE` (e.g. `http://localhost:11434`) |
+| Groq (free tier) | `groq/llama3-8b-8192` | `GROQ_API_KEY` |
+| Anthropic | `anthropic/claude-3-haiku-20240307` | `ANTHROPIC_API_KEY` |
+
+Switch providers by changing one line in `.env`:
+
+```bash
+LLM_MODEL=openai/gpt-4o-mini    # OpenAI cloud
+LLM_MODEL=ollama/llama3          # local Ollama on Jetson
+LLM_MODEL=groq/llama3-8b-8192   # fast Groq cloud (free tier)
+```
+
+The Q&A engine uses a **LangChain SQL agent** (`create_sql_agent`) that automatically inspects the database schema, generates SQL, validates and executes it, self-corrects on errors (up to 3 retries), and formats a natural-language answer. All timestamps are displayed in IST.
 
 ---
 
@@ -74,6 +94,8 @@ pip install -r requirements.txt
 * **Object Tracking** — Uses BoT-SORT or ByteTrack for persistent IDs.
 * **Adaptive Framerate** — Dynamically adjusts processing FPS to save power when the scene is empty.
 * **Telegram Notifications** — Sends text + snapshot images exactly at the moment of detection.
+* **LLM-powered Q&A** — Ask natural-language questions about alert history via Telegram `/ask` or CLI. Powered by LangChain SQL agent with multi-provider LLM support (OpenAI, Ollama, Groq, and more via litellm).
+* **Async Telegram Bot** — Built with [python-telegram-bot](https://python-telegram-bot.org/) for non-blocking I/O, declarative command routing, and graceful shutdown.
 * **Configurable via `.env`** — Tune FPS, confidence thresholds, object classes, and camera backends.
 
 ---
@@ -81,11 +103,11 @@ pip install -r requirements.txt
 ## 📂 Project Structure
 
 ```
-- **app/core/** – Core logic: interfaces (ports), state machines, detection/alert policies, configuration, and pipeline.
-- **app/adapters/** – Implementations of interfaces for camera input, detection (YOLO/TensorRT), tracking, alert delivery, and telemetry.
-- **app/app/** – Executable scripts for running the system, live preview, and pipeline.
-- **app/tools/** – Tools like exporting YOLO models to TensorRT engines.
-- **tests/** – Unit and integration tests for policies and overall behavior.
+- **app/core/** – Core logic: interfaces (ports), state machines, detection/alert policies, configuration, QA service, and pipeline.
+- **app/adapters/** – Implementations of interfaces for camera input, detection (YOLO/TensorRT), tracking, alert delivery, LLM (litellm), Telegram bot, and telemetry.
+- **app/app/** – Executable scripts for running the system, live preview, and Telegram Q&A bot.
+- **app/tools/** – Tools like exporting YOLO models to TensorRT engines, and CLI Q&A.
+- **tests/** – Unit and integration tests for policies, QA service, and overall behavior.
 ```
 
 ---
@@ -190,7 +212,46 @@ docker compose up -d ask-telegram
 
 `ask-telegram` is CPU-only and does not need GPU runtime. This avoids contention with the detector service.
 
-This is transport-modular: Telegram is only an adapter. You can add a WhatsApp adapter later and reuse the same command handler + QA service.
+This is transport-modular: Telegram is only an adapter. You can add a WhatsApp adapter later and reuse the same QA service.
+
+---
+
+## 🔄 Migration from v1
+
+If you are upgrading from the previous version (hand-rolled LLM client, manual Text-to-SQL, raw Telegram polling), follow these steps:
+
+### `.env` changes
+
+**Remove** these variables (no longer used):
+```
+LLM_PROVIDER
+OPENAI_BASE_URL
+TG_QA_POLL_TIMEOUT_SEC
+TG_QA_IDLE_SLEEP_SEC
+```
+
+**Update** `LLM_MODEL` to include the provider prefix:
+```bash
+# Before
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-4o-mini
+
+# After
+LLM_MODEL=openai/gpt-4o-mini
+```
+
+### What changed
+
+| Component | Before | After |
+|---|---|---|
+| LLM client | Hand-rolled `requests.post` to OpenAI API | **litellm** — universal gateway for 100+ providers |
+| Text-to-SQL | Manual prompt engineering, regex SQL extraction, 1 retry | **LangChain `create_sql_agent`** — ReAct reasoning, schema introspection, 3 auto-retries |
+| Telegram bot | Raw `getUpdates` polling loop with `requests` | **python-telegram-bot** — async `Application` with `CommandHandler`, graceful shutdown |
+| Config | 4 LLM vars + 2 polling tunables | 1 model string (`LLM_MODEL`) |
+
+### Files removed
+* `app/adapters/llm_openai.py` — replaced by `app/adapters/llm_litellm.py`
+* `app/adapters/chat_telegram_polling.py` — replaced by `app/adapters/chat_telegram_bot.py`
 
 ---
 

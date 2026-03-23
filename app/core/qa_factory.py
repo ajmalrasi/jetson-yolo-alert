@@ -1,18 +1,39 @@
 from __future__ import annotations
 
-from ..adapters.llm_openai import OpenAILLMClient
+import logging
+import os
+
+from langchain_community.utilities import SQLDatabase
+
+from ..adapters.llm_litellm import build_chat_llm
 from .alert_history import AlertHistoryStore
 from .config import Config
 from .qa import QAService
 
+logger = logging.getLogger(__name__)
+
+
+def _ensure_db_exists(db_path: str) -> str:
+    """Make sure the SQLite file and its parent directory exist so that
+    SQLAlchemy can open it.  Falls back to /tmp if the configured path
+    is not writable."""
+    try:
+        AlertHistoryStore(db_path)
+        return db_path
+    except PermissionError:
+        fallback = "/tmp/alert_history.db"
+        logger.warning("Cannot write to %s, falling back to %s", db_path, fallback)
+        AlertHistoryStore(fallback)
+        return fallback
+
 
 def build_qa_service(cfg: Config) -> QAService:
-    history = AlertHistoryStore(cfg.alert_db_path)
+    db_path = _ensure_db_exists(cfg.alert_db_path)
+    db = SQLDatabase.from_uri(f"sqlite:///{db_path}")
+
     llm = None
-    if cfg.llm_provider == "openai" and cfg.openai_api_key:
-        llm = OpenAILLMClient(
-            api_key=cfg.openai_api_key,
-            model=cfg.llm_model,
-            base_url=cfg.openai_base_url,
-        )
-    return QAService(history=history, llm=llm)
+    model = cfg.llm_model.strip()
+    if model and model != "none":
+        llm = build_chat_llm(model=model)
+
+    return QAService(db=db, llm=llm)

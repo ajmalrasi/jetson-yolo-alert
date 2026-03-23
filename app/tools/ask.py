@@ -17,11 +17,7 @@ def main() -> int:
         question = sys.stdin.read().strip()
 
     cfg = Config()
-    try:
-        service = build_qa_service(cfg)
-    except PermissionError:
-        cfg.alert_db_path = "/tmp/alert_history.db"
-        service = build_qa_service(cfg)
+    service = build_qa_service(cfg)
     answer = service.answer_question(question)
     print(answer)
     return 0
