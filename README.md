@@ -112,6 +112,11 @@ Run the system in the background:
 docker compose up -d alert
 ```
 
+Run detection + Telegram Q&A bot together:
+```bash
+docker compose up -d alert ask-telegram
+```
+
 ### 4️⃣ Live Preview (Optional)
 
 If you have a monitor connected (or X11 forwarding), you can view a live debug feed:
@@ -175,6 +180,12 @@ Run Telegram Q&A bot (`/ask ...`) using the same QA service:
 
 ```bash
 python -m app.app.ask_telegram
+```
+
+Or via Docker Compose:
+
+```bash
+docker compose up -d ask-telegram
 ```
 
 This is transport-modular: Telegram is only an adapter. You can add a WhatsApp adapter later and reuse the same command handler + QA service.
