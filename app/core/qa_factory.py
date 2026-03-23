@@ -15,4 +15,5 @@ def build_qa_service(cfg: Config) -> QAService:
             model=cfg.llm_model,
             base_url=cfg.openai_base_url,
         )
-    return QAService(history=history, llm=llm)
+    known_classes = cfg.trigger_classes | cfg.draw_classes
+    return QAService(history=history, llm=llm, known_classes=known_classes)
