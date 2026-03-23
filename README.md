@@ -188,6 +188,8 @@ Or via Docker Compose:
 docker compose up -d ask-telegram
 ```
 
+`ask-telegram` is CPU-only and does not need GPU runtime. This avoids contention with the detector service.
+
 This is transport-modular: Telegram is only an adapter. You can add a WhatsApp adapter later and reuse the same command handler + QA service.
 
 ---
