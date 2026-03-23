@@ -6,8 +6,11 @@ import calendar
 import json
 import re
 from typing import Optional, Protocol
+from zoneinfo import ZoneInfo
 
 from .alert_history import AlertHistoryStore
+
+IST = ZoneInfo("Asia/Kolkata")
 
 
 class LLMClient(Protocol):
@@ -28,7 +31,8 @@ class QAService:
         if "last alert" in q_lower:
             return self._answer_last_alert(clean_q)
 
-        day = _extract_day(clean_q, now_utc=datetime.now(timezone.utc))
+        now_ist = datetime.now(IST)
+        day = _extract_day(clean_q, now_local=now_ist)
         inferred_intent: Optional[str] = None
         if day is None and self.llm is not None:
             inferred_intent, inferred_date = self._infer_query_with_llm(clean_q)
@@ -36,7 +40,7 @@ class QAService:
                 return self._answer_last_alert(clean_q)
             if inferred_date:
                 try:
-                    day = datetime.strptime(inferred_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    day = datetime.strptime(inferred_date, "%Y-%m-%d").replace(tzinfo=IST)
                 except ValueError:
                     day = None
         if day is None:
@@ -45,26 +49,28 @@ class QAService:
                 "Try a date like '2026-03-10', 'March 10', or use 'last alert'."
             )
 
-        rows = self.history.get_alerts_on_date(day.strftime("%Y-%m-%d"))
+        day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
+        rows = self.history.get_alerts_between(day_start, day_end)
         alert_events = len(rows)
         total_objects = sum(r.count for r in rows)
         best_conf = max((r.best_conf for r in rows), default=0.0)
 
         if alert_events == 0:
-            return f"No alerts were recorded on {day.date().isoformat()} (UTC)."
+            return f"No alerts were recorded on {day.date().isoformat()} (IST)."
 
         summary = (
-            f"date={day.date().isoformat()} UTC\n"
+            f"date={day.date().isoformat()} IST\n"
             f"alerts={alert_events}\n"
             f"total_detected_objects={total_objects}\n"
             f"best_confidence={best_conf:.2f}"
         )
         default_answer = (
-            f"On {day.date().isoformat()} (UTC), there were {alert_events} alerts "
+            f"On {day.date().isoformat()} (IST), there were {alert_events} alerts "
             f"with a total of {total_objects} detected objects."
         )
         if inferred_intent == "count_alerts":
-            default_answer = f"On {day.date().isoformat()} (UTC), there were {alert_events} alerts."
+            default_answer = f"On {day.date().isoformat()} (IST), there were {alert_events} alerts."
         return self._format_with_llm(question=clean_q, summary=summary, default_answer=default_answer)
 
     def _answer_last_alert(self, question: str) -> str:
@@ -72,7 +78,7 @@ class QAService:
         if last is None:
             return "No alerts have been recorded yet."
 
-        ts = last.ts.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        ts = last.ts.astimezone(IST).strftime("%Y-%m-%d %H:%M:%S IST")
         trigger_classes = ", ".join(last.trigger_classes) if last.trigger_classes else "-"
         context_classes = ", ".join(last.context_classes) if last.context_classes else "-"
         summary = (
@@ -112,16 +118,16 @@ class QAService:
         if self.llm is None:
             return None, None
 
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        now = datetime.now(IST).strftime("%Y-%m-%d")
         system_prompt = (
             "You convert user questions about alert history into strict JSON. "
             "Return only JSON with keys: intent, date. "
             "intent must be one of: date_query, last_alert, count_alerts, unknown. "
             "date must be YYYY-MM-DD for date-based questions, otherwise null. "
-            "Resolve relative terms like today, yesterday, this morning using UTC current date."
+            "Resolve relative terms like today, yesterday, this morning using India time (IST)."
         )
         user_message = (
-            f"Current UTC date: {now}\n"
+            f"Current IST date: {now}\n"
             f"Question: {question}\n"
             "JSON:"
         )
@@ -133,20 +139,20 @@ class QAService:
         return intent, date_value
 
 
-def _extract_day(question: str, now_utc: datetime) -> Optional[datetime]:
+def _extract_day(question: str, now_local: datetime) -> Optional[datetime]:
     q = question.strip().lower()
 
     if "today" in q:
-        return now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        return now_local.replace(hour=0, minute=0, second=0, microsecond=0)
     if "yesterday" in q:
-        day = now_utc - timedelta(days=1)
+        day = now_local - timedelta(days=1)
         return day.replace(hour=0, minute=0, second=0, microsecond=0)
 
     iso_match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", q)
     if iso_match:
         try:
             day = datetime.strptime(iso_match.group(1), "%Y-%m-%d")
-            return day.replace(tzinfo=timezone.utc)
+            return day.replace(tzinfo=now_local.tzinfo or IST)
         except ValueError:
             pass
 
@@ -160,13 +166,13 @@ def _extract_day(question: str, now_utc: datetime) -> Optional[datetime]:
 
     month_token = long_match.group(1).lower()
     day_token = int(long_match.group(2))
-    year_token = int(long_match.group(3)) if long_match.group(3) else now_utc.year
+    year_token = int(long_match.group(3)) if long_match.group(3) else now_local.year
 
     month_num = _month_to_number(month_token)
     if month_num is None:
         return None
     try:
-        return datetime(year_token, month_num, day_token, tzinfo=timezone.utc)
+        return datetime(year_token, month_num, day_token, tzinfo=now_local.tzinfo or IST)
     except ValueError:
         return None
 
