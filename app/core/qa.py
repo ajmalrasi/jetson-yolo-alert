@@ -56,6 +56,11 @@ class QAService:
         total_objects = sum(r.count for r in rows)
         best_conf = max((r.best_conf for r in rows), default=0.0)
 
+        all_trigger = sorted({c for r in rows for c in r.trigger_classes})
+        all_context = sorted({c for r in rows for c in r.context_classes})
+        trigger_str = ", ".join(all_trigger) if all_trigger else "-"
+        context_str = ", ".join(all_context) if all_context else "-"
+
         if alert_events == 0:
             return f"No alerts were recorded on {day.date().isoformat()} (IST)."
 
@@ -63,14 +68,20 @@ class QAService:
             f"date={day.date().isoformat()} IST\n"
             f"alerts={alert_events}\n"
             f"total_detected_objects={total_objects}\n"
-            f"best_confidence={best_conf:.2f}"
+            f"best_confidence={best_conf:.2f}\n"
+            f"trigger_classes={trigger_str}\n"
+            f"context_classes={context_str}"
         )
         default_answer = (
             f"On {day.date().isoformat()} (IST), there were {alert_events} alerts "
-            f"with a total of {total_objects} detected objects."
+            f"with a total of {total_objects} detected objects. "
+            f"Trigger classes: {trigger_str}. Context classes: {context_str}."
         )
         if inferred_intent == "count_alerts":
-            default_answer = f"On {day.date().isoformat()} (IST), there were {alert_events} alerts."
+            default_answer = (
+                f"On {day.date().isoformat()} (IST), there were {alert_events} alerts. "
+                f"Trigger classes: {trigger_str}."
+            )
         return self._format_with_llm(question=clean_q, summary=summary, default_answer=default_answer)
 
     def _answer_last_alert(self, question: str) -> str:

@@ -23,6 +23,8 @@ def test_iso_date_query_uses_ist_day_window(tmp_path):
         count=2,
         best_conf=0.8,
         image_path=None,
+        trigger_classes=["person"],
+        context_classes=["person", "car"],
     )
     # Excluded from 2026-03-19 IST (2026-03-19 20:00 UTC == 2026-03-20 01:30 IST)
     store.insert_alert(
@@ -30,11 +32,17 @@ def test_iso_date_query_uses_ist_day_window(tmp_path):
         count=4,
         best_conf=0.9,
         image_path=None,
+        trigger_classes=["dog"],
+        context_classes=["dog"],
     )
 
     answer = QAService(history=store).answer_question("How many people came on 2026-03-19?")
 
-    assert "On 2026-03-19 (IST), there were 1 alerts with a total of 2 detected objects." in answer
+    assert "On 2026-03-19 (IST)" in answer
+    assert "1 alerts" in answer
+    assert "2 detected objects" in answer
+    assert "Trigger classes: person" in answer
+    assert "Context classes: car, person" in answer
 
 
 def test_llm_infers_date_when_natural_phrase_has_no_explicit_date(tmp_path):
