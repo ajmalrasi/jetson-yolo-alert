@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import calendar
+import json
 import re
 from typing import Optional, Protocol
 
@@ -28,6 +29,16 @@ class QAService:
             return self._answer_last_alert(clean_q)
 
         day = _extract_day(clean_q, now_utc=datetime.now(timezone.utc))
+        inferred_intent: Optional[str] = None
+        if day is None and self.llm is not None:
+            inferred_intent, inferred_date = self._infer_query_with_llm(clean_q)
+            if inferred_intent == "last_alert":
+                return self._answer_last_alert(clean_q)
+            if inferred_date:
+                try:
+                    day = datetime.strptime(inferred_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                except ValueError:
+                    day = None
         if day is None:
             return (
                 "I could not find a specific date in your question. "
@@ -52,6 +63,8 @@ class QAService:
             f"On {day.date().isoformat()} (UTC), there were {alert_events} alerts "
             f"with a total of {total_objects} detected objects."
         )
+        if inferred_intent == "count_alerts":
+            default_answer = f"On {day.date().isoformat()} (UTC), there were {alert_events} alerts."
         return self._format_with_llm(question=clean_q, summary=summary, default_answer=default_answer)
 
     def _answer_last_alert(self, question: str) -> str:
@@ -94,6 +107,30 @@ class QAService:
         except Exception:
             return default_answer
         return answer or default_answer
+
+    def _infer_query_with_llm(self, question: str) -> tuple[Optional[str], Optional[str]]:
+        if self.llm is None:
+            return None, None
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        system_prompt = (
+            "You convert user questions about alert history into strict JSON. "
+            "Return only JSON with keys: intent, date. "
+            "intent must be one of: date_query, last_alert, count_alerts, unknown. "
+            "date must be YYYY-MM-DD for date-based questions, otherwise null. "
+            "Resolve relative terms like today, yesterday, this morning using UTC current date."
+        )
+        user_message = (
+            f"Current UTC date: {now}\n"
+            f"Question: {question}\n"
+            "JSON:"
+        )
+        try:
+            raw = self.llm.complete(system_prompt=system_prompt, user_message=user_message)
+        except Exception:
+            return None, None
+        intent, date_value = _parse_llm_query_json(raw)
+        return intent, date_value
 
 
 def _extract_day(question: str, now_utc: datetime) -> Optional[datetime]:
@@ -146,3 +183,35 @@ def _month_to_number(token: str) -> Optional[int]:
         if token == name.lower():
             return idx
     return None
+
+
+def _parse_llm_query_json(raw: str) -> tuple[Optional[str], Optional[str]]:
+    text = (raw or "").strip()
+    if not text:
+        return None, None
+
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError):
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+
+    intent = data.get("intent")
+    if isinstance(intent, str):
+        intent = intent.strip().lower()
+    else:
+        intent = None
+
+    date_value = data.get("date")
+    if isinstance(date_value, str):
+        date_value = date_value.strip()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_value):
+            date_value = None
+    else:
+        date_value = None
+    return intent, date_value
