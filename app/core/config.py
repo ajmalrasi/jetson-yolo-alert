@@ -46,8 +46,6 @@ class Config:
     tg_token: Optional[str] = os.getenv("TELEGRAM_TOKEN") or os.getenv("TG_BOT")
     tg_chat: Optional[str] = os.getenv("TELEGRAM_CHAT_ID") or os.getenv("TG_CHAT")
     tg_qa_allowed_chat_id: Optional[str] = os.getenv("TG_QA_ALLOWED_CHAT_ID")
-    tg_qa_poll_timeout_sec: int = int(os.getenv("TG_QA_POLL_TIMEOUT_SEC", "25"))
-    tg_qa_idle_sleep_sec: float = float(os.getenv("TG_QA_IDLE_SLEEP_SEC", "1"))
     # Misc
     save_dir: str = os.getenv("SAVE_DIR", "/workspace/work/alerts")
     draw: bool = os.getenv("DRAW", "1") not in ("0","false","False","")
@@ -56,7 +54,4 @@ class Config:
         "ALERT_DB_PATH",
         os.path.join(os.getenv("SAVE_DIR", "/workspace/work/alerts"), "alert_history.db"),
     )
-    llm_provider: str = os.getenv("LLM_PROVIDER", "none").strip().lower()
-    llm_model: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
-    openai_api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
-    openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    llm_model: str = os.getenv("LLM_MODEL", "none")
