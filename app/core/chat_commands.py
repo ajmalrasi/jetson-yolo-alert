@@ -28,11 +28,11 @@ class QAChatCommandHandler:
             question = message[4:].strip()
             if not question:
                 return "Please add a question after /ask."
-            return self.qa_service.answer_question(question)
+            return str(self.qa_service.answer_question(question))
 
         if lower.startswith("ask "):
             question = message[4:].strip()
-            return self.qa_service.answer_question(question) if question else "Please add a question after ask."
+            return str(self.qa_service.answer_question(question)) if question else "Please add a question after ask."
 
         # Keep this strict so generic chatter does not trigger accidental queries.
         return "Use /ask <your question>."

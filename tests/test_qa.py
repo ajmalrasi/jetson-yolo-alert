@@ -49,14 +49,14 @@ def test_generate_sql_and_answer(tmp_path):
     answer = svc.answer_question("how many alerts?")
 
     assert fake_llm.invoke.call_count == 2
-    assert "2 alerts" in answer
+    assert "2 alerts" in answer.text
 
 
 def test_no_llm_returns_config_message(tmp_path):
     _, db_path = _make_db(tmp_path)
     svc = QAService(db_path=db_path, llm=None)
     answer = svc.answer_question("how many alerts today?")
-    assert "LLM is not configured" in answer
+    assert "LLM is not configured" in answer.text
 
 
 def test_empty_question_returns_message(tmp_path):
@@ -64,7 +64,7 @@ def test_empty_question_returns_message(tmp_path):
     fake_llm = MagicMock()
     svc = QAService(db_path=db_path, llm=fake_llm)
     answer = svc.answer_question("   ")
-    assert "Please provide a question" in answer
+    assert "Please provide a question" in answer.text
 
 
 def test_unsafe_sql_blocked(tmp_path):
@@ -78,14 +78,14 @@ def test_unsafe_sql_blocked(tmp_path):
 
     svc = QAService(db_path=db_path, llm=fake_llm)
     answer = svc.answer_question("delete everything")
-    assert "went wrong" in answer.lower()
+    assert "went wrong" in answer.text.lower()
 
 
 def test_execute_sql_returns_rows(tmp_path):
     """_execute_sql should return formatted table rows."""
     _, db_path = _make_db(tmp_path, _seed_two_alerts())
     svc = QAService(db_path=db_path, llm=None)
-    result = svc._execute_sql("SELECT count, trigger_classes FROM alerts ORDER BY ts;")
+    result, _ = svc._execute_sql("SELECT count, trigger_classes FROM alerts ORDER BY ts;")
     assert "count" in result
     assert "person" in result
     assert "dog" in result

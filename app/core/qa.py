@@ -5,13 +5,23 @@ import re
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class AnswerResult:
+    """Structured result from QAService.answer_question."""
+    text: str
+    image_path: Optional[str] = None
+
+    def __str__(self) -> str:
+        return self.text
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -35,6 +45,9 @@ Rules:
 - ts is stored as ISO-8601 UTC. Current time: {now_utc} UTC ({now_ist} IST). User is in IST (UTC+5:30).
 - For "today" in IST, convert to UTC range: WHERE ts >= datetime('{today_utc_start}') AND ts < datetime('{tomorrow_utc_start}')
 - Classes are JSON arrays in TEXT columns. Use json_each() or LIKE '%"classname"%' to filter.
+- When filtering by a class name, ALWAYS search BOTH trigger_classes AND context_classes:
+  WHERE (trigger_classes LIKE '%"dog"%' OR context_classes LIKE '%"dog"%')
+- When the user asks for a picture/image/photo/pic, always include image_path in SELECT and add WHERE image_path IS NOT NULL.
 - Return ONLY the SQL query, nothing else. No markdown, no explanation."""
 
 _ANSWER_PROMPT = """\
@@ -56,13 +69,13 @@ class QAService:
     llm: Optional[BaseChatModel] = None
     _schema: str = field(default=_SCHEMA, repr=False)
 
-    def answer_question(self, question: str) -> str:
+    def answer_question(self, question: str) -> AnswerResult:
         clean_q = question.strip()
         if not clean_q:
-            return "Please provide a question."
+            return AnswerResult("Please provide a question.")
 
         if self.llm is None:
-            return (
+            return AnswerResult(
                 "LLM is not configured. Set LLM_MODEL and your provider's "
                 "API key in .env to enable Q&A."
             )
@@ -85,13 +98,14 @@ class QAService:
                 now_ist.strftime("%Y-%m-%d %H:%M:%S IST"),
                 today_utc_start, tomorrow_utc_start,
             )
-            result = self._execute_sql(sql)
-            return self._format_answer(
-                clean_q, result, now_ist.strftime("%Y-%m-%d %H:%M:%S IST")
+            result_text, image_path = self._execute_sql(sql)
+            answer = self._format_answer(
+                clean_q, result_text, now_ist.strftime("%Y-%m-%d %H:%M:%S IST")
             )
+            return AnswerResult(text=answer, image_path=image_path)
         except Exception:
             logger.exception("QA failed for: %s", clean_q)
-            return "Something went wrong while processing your question. Please try again."
+            return AnswerResult("Something went wrong while processing your question. Please try again.")
 
     def _generate_sql(
         self, question: str, now_utc: str, now_ist: str,
@@ -116,18 +130,22 @@ class QAService:
             raise ValueError(f"Unsafe SQL blocked: {sql}")
         return sql
 
-    def _execute_sql(self, sql: str) -> str:
+    def _execute_sql(self, sql: str) -> Tuple[str, Optional[str]]:
+        """Execute SQL and return (result_text, first_image_path_or_None)."""
         conn = sqlite3.connect(self.db_path, timeout=5)
         try:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(sql).fetchmany(MAX_RESULT_ROWS)
             if not rows:
-                return "(no rows)"
+                return "(no rows)", None
             cols = rows[0].keys()
+            image_path = None
+            if "image_path" in cols and rows[0]["image_path"]:
+                image_path = str(rows[0]["image_path"])
             lines = [" | ".join(cols)]
             for r in rows:
                 lines.append(" | ".join(str(r[c]) for c in cols))
-            return "\n".join(lines)
+            return "\n".join(lines), image_path
         finally:
             conn.close()
 

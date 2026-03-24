@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Optional
 
 from telegram import Update
@@ -13,7 +14,7 @@ from telegram.ext import (
     filters,
 )
 
-from ..core.qa import QAService
+from ..core.qa import AnswerResult, QAService
 
 logger = logging.getLogger(__name__)
 
@@ -42,14 +43,25 @@ def build_telegram_app(
         except (TypeError, ValueError):
             logger.warning("Invalid TG_QA_ALLOWED_CHAT_ID=%s, allowing all chats", allowed_chat_id)
 
+    async def _reply_answer(update: Update, result: AnswerResult) -> None:
+        if result.image_path and os.path.isfile(result.image_path):
+            caption = result.text[:1024] if result.text else None
+            try:
+                with open(result.image_path, "rb") as f:
+                    await update.message.reply_photo(photo=f, caption=caption)
+                return
+            except Exception:
+                logger.warning("Failed to send photo %s, falling back to text", result.image_path)
+        await update.message.reply_text(str(result))
+
     async def _ask_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         question = " ".join(context.args) if context.args else ""
         if not question:
             await update.message.reply_text("Please add a question after /ask.")
             return
 
-        answer = await asyncio.to_thread(qa_service.answer_question, question)
-        await update.message.reply_text(answer)
+        result = await asyncio.to_thread(qa_service.answer_question, question)
+        await _reply_answer(update, result)
 
     async def _help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(HELP_TEXT)
@@ -62,8 +74,8 @@ def build_telegram_app(
         if lower.startswith("ask "):
             question = text[4:].strip()
             if question:
-                answer = await asyncio.to_thread(qa_service.answer_question, question)
-                await update.message.reply_text(answer)
+                result = await asyncio.to_thread(qa_service.answer_question, question)
+                await _reply_answer(update, result)
                 return
         await update.message.reply_text("Use /ask <your question>.")
 
