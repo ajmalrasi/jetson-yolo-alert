@@ -47,14 +47,25 @@ class QAService:
         prefix = SYSTEM_PREFIX.format(now_ist=now_ist)
 
         try:
-            agent = create_sql_agent(
-                self.llm,
-                db=self.db,
-                agent_type="tool-calling",
-                prefix=prefix,
-                verbose=False,
-            )
-            result: dict[str, Any] = agent.invoke({"input": clean_q})
+            try:
+                agent = create_sql_agent(
+                    self.llm,
+                    db=self.db,
+                    agent_type="tool-calling",
+                    prefix=prefix,
+                    verbose=False,
+                )
+                result: dict[str, Any] = agent.invoke({"input": clean_q})
+            except Exception:
+                logger.info("tool-calling agent failed, falling back to ReAct agent")
+                agent = create_sql_agent(
+                    self.llm,
+                    db=self.db,
+                    agent_type="zero-shot-react-description",
+                    prefix=prefix,
+                    verbose=False,
+                )
+                result = agent.invoke({"input": clean_q})
             return result.get("output", "No answer was produced.")
         except Exception:
             logger.exception("SQL agent failed for question: %s", clean_q)

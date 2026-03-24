@@ -83,6 +83,7 @@ services:
     working_dir: /workspace
     volumes:
       - ./work:/workspace/work
+      - ./app:/workspace/app
     restart: unless-stopped
     logging:
       driver: json-file
