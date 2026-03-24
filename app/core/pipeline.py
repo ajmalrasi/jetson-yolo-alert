@@ -178,6 +178,8 @@ class AlertStep(PipelineStep):
     class_names_by_id: dict[int, str]
     telemetry: Telemetry
     history: Optional["AlertHistoryStore"] = None
+    save_raw_frames: bool = False
+    raw_frames_dir: str = ""
 
     def run(self, ctx: Ctx) -> Ctx:
         # accumulate alerts whenever we see triggers (presence policy still tracks state separately)
@@ -201,10 +203,17 @@ class AlertStep(PipelineStep):
                 os.makedirs(self.save_dir, exist_ok=True)
                 img_path = os.path.join(self.save_dir, f"snapshot_{int(ctx.now*1000)}.jpg")
                 try:
-                    # Draw configured context classes for richer snapshots.
                     _save_snapshot(img_path, ctx.frame, ctx.dets, self.draw_ids, self.conf_thresh)
                 except Exception:
                     img_path = None
+
+            if ctx.frame is not None and self.save_raw_frames:
+                os.makedirs(self.raw_frames_dir, exist_ok=True)
+                raw_path = os.path.join(self.raw_frames_dir, f"frame_{int(ctx.now*1000)}.jpg")
+                try:
+                    cv2.imwrite(raw_path, ctx.frame.image)
+                except Exception:
+                    pass
 
             self.alert.add(
                 ids,
@@ -333,6 +342,8 @@ class Pipeline:
                 class_names_by_id={v: k for k, v in self._name2id.items()},
                 telemetry=self.telemetry,
                 history=self.alert_history,
+                save_raw_frames=self.cfg.save_raw_frames,
+                raw_frames_dir=self.cfg.raw_frames_dir,
             ),
             TelemetryStep(telemetry=self.telemetry),
         ]

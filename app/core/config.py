@@ -49,6 +49,12 @@ class Config:
     # Misc
     save_dir: str = os.getenv("SAVE_DIR", "/workspace/work/alerts")
     draw: bool = os.getenv("DRAW", "1") not in ("0","false","False","")
+    # Save clean (un-annotated) frames for fine-tuning / labeling
+    save_raw_frames: bool = os.getenv("SAVE_RAW_FRAMES", "0") not in ("0", "false", "False", "")
+    raw_frames_dir: str = os.getenv(
+        "RAW_FRAMES_DIR",
+        os.path.join(os.getenv("SAVE_DIR", "/workspace/work/alerts"), "raw_frames"),
+    )
     # Alert history / LLM QA
     alert_db_path: str = os.getenv(
         "ALERT_DB_PATH",
