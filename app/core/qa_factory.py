@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
-
-from langchain_community.utilities import SQLDatabase
 
 from ..adapters.llm_litellm import build_chat_llm
 from .alert_history import AlertHistoryStore
@@ -14,9 +11,8 @@ logger = logging.getLogger(__name__)
 
 
 def _ensure_db_exists(db_path: str) -> str:
-    """Make sure the SQLite file and its parent directory exist so that
-    SQLAlchemy can open it.  Falls back to /tmp if the configured path
-    is not writable."""
+    """Make sure the SQLite file and its parent directory exist.
+    Falls back to /tmp if the configured path is not writable."""
     try:
         AlertHistoryStore(db_path)
         return db_path
@@ -29,11 +25,10 @@ def _ensure_db_exists(db_path: str) -> str:
 
 def build_qa_service(cfg: Config) -> QAService:
     db_path = _ensure_db_exists(cfg.alert_db_path)
-    db = SQLDatabase.from_uri(f"sqlite:///{db_path}")
 
     llm = None
     model = cfg.llm_model.strip()
     if model and model != "none":
         llm = build_chat_llm(model=model)
 
-    return QAService(db=db, llm=llm)
+    return QAService(db_path=db_path, llm=llm)
