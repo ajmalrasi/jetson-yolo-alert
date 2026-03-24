@@ -16,62 +16,90 @@ Includes services for model export, live preview, alerting (Telegram notificatio
 
 ## ⚙️ Environment Variables (`.env`)
 
+All variables are configured in a single `.env` file. See `.env.example` for a complete template.
+
+**Core**
+
 | Variable | Default | Description |
 |---|---|---|
-| `SRC` | `0` | Camera source (index or RTSP/HTTP URL). |
-| `YOLO_MODEL` | `yolov8n.pt` | Original YOLO PyTorch model to export. |
-| `YOLO_ENGINE` | `yolov8n.engine` | TensorRT engine file for inference. |
-| `CONF_THRESH` | `0.60` | Detection confidence threshold. |
-| `IMG_SIZE` | `640` | Inference image size. |
-| `VID_STRIDE` | `1` | Process every Nth frame. |
-| `BASE_FPS` | `5` | Idle FPS when nothing is detected. |
-| `HIGH_FPS` | `0` (uncapped) | FPS when boosting after detection. |
-| `BOOST_ARM_FRAMES` | `3` | Frames before boost triggers. |
-| `BOOST_MIN_SEC` | `1.0` | Minimum presence before boost triggers. |
-| `COOLDOWN_SEC` | `5.0` | FPS cooldown after object leaves the frame. |
-| `TRIGGER_CLASSES` | `person,dog,cat` | Classes that trigger alerts. |
-| `DRAW_CLASSES` | `person,car,dog,cat,motorcycle`| Classes to draw bounding boxes around in snapshots. |
-| `MIN_FRAMES` | `3` | Frames required before registering presence. |
-| `MIN_PERSIST_SEC` | `1.0` | Seconds required before registering presence. |
-| `REARM_SEC` | `20` | Time before the exact same tracked object can trigger another alert. |
-| `RATE_WINDOW_SEC` | `30` | Minimum time between sending Telegram alerts. |
-| `TRACKER` | `botsort.yaml` | Tracker config (`botsort.yaml` or `bytetrack.yaml`). |
-| `TRACKER_ON` | `1` | Enable tracking. |
-| `TELEGRAM_TOKEN` | *(none)* | Telegram bot token (also accepts `TG_BOT`). |
-| `TELEGRAM_CHAT_ID`| *(none)* | Telegram chat ID (also accepts `TG_CHAT`). |
-| `TG_QA_ALLOWED_CHAT_ID` | *(none)* | Restrict which chat can use the `/ask` Q&A bot. Defaults to `TELEGRAM_CHAT_ID`. |
-| `SAVE_DIR` | `/workspace/work/alerts`| Directory to save alert snapshots. |
-| `ALERT_DB_PATH` | `/workspace/work/alerts/alert_history.db` | SQLite file for alert history storage and Q&A. |
-| `LLM_MODEL` | `none` | litellm model string (see **Supported LLM Providers** below). Set to `none` to disable Q&A. |
-| `OPENAI_API_KEY` | *(none)* | API key for OpenAI. Only needed when using an `openai/` model. |
-| `DRAW` | `1` | Enable drawing bounding boxes on snapshots. |
-| `USE_GSTREAMER` | `0` | Enable GStreamer backend instead of FFmpeg for RTSP. |
-| `RTSP_LATENCY_MS` | `200` | Latency buffer for RTSP streams. |
-| `CAP_PROP_BUFFERSIZE` | `2` | OpenCV capture buffer size. |
+| `SRC` | `0` | Camera source (index or RTSP/HTTP URL) |
+| `YOLO_ENGINE` | `yolov8n.engine` | TensorRT engine file |
+| `CONF_THRESH` | `0.60` | Detection confidence threshold |
+| `TRIGGER_CLASSES` | `person,dog,cat` | Classes that trigger alerts |
+
+**Telegram**
+
+| Variable | Default | Description |
+|---|---|---|
+| `TELEGRAM_TOKEN` | *(none)* | Bot token (also accepts `TG_BOT`) |
+| `TELEGRAM_CHAT_ID` | *(none)* | Chat ID for alerts (also accepts `TG_CHAT`) |
+| `TG_QA_ALLOWED_CHAT_ID` | *(none)* | Restrict `/ask` to this chat. Defaults to `TELEGRAM_CHAT_ID` |
+
+**LLM Q&A**
+
+| Variable | Default | Description |
+|---|---|---|
+| `LLM_MODEL` | `none` | Provider/model string (see **Supported LLM Providers**). `none` to disable |
+| `GROQ_API_KEY` | *(none)* | For `groq/` models |
+| `OPENAI_API_KEY` | *(none)* | For `openai/` models |
+| `XAI_API_KEY` | *(none)* | For `xai/` models |
+
+<details>
+<summary><strong>All other variables</strong></summary>
+
+| Variable | Default | Description |
+|---|---|---|
+| `YOLO_MODEL` | `yolov8n.pt` | PyTorch model to export |
+| `IMG_SIZE` | `640` | Inference image size |
+| `VID_STRIDE` | `1` | Process every Nth frame |
+| `BASE_FPS` | `5` | Idle FPS |
+| `HIGH_FPS` | `0` (uncapped) | FPS during detection boost |
+| `BOOST_ARM_FRAMES` | `3` | Frames before boost triggers |
+| `BOOST_MIN_SEC` | `1.0` | Min presence time before boost |
+| `COOLDOWN_SEC` | `5.0` | FPS cooldown after object leaves |
+| `DRAW_CLASSES` | `person,car,dog,cat,motorcycle` | Classes to draw bounding boxes for |
+| `MIN_FRAMES` | `3` | Frames before registering presence |
+| `MIN_PERSIST_SEC` | `1.0` | Seconds before registering presence |
+| `REARM_SEC` | `20` | Re-trigger cooldown per tracked object |
+| `RATE_WINDOW_SEC` | `30` | Min time between Telegram alerts |
+| `TRACKER` | `botsort.yaml` | Tracker config |
+| `TRACKER_ON` | `1` | Enable tracking |
+| `SAVE_DIR` | `/workspace/work/alerts` | Alert snapshot directory |
+| `ALERT_DB_PATH` | `/workspace/work/alerts/alert_history.db` | SQLite database path |
+| `DRAW` | `1` | Enable bounding box drawing |
+| `USE_GSTREAMER` | `0` | GStreamer backend for RTSP |
+| `RTSP_LATENCY_MS` | `200` | RTSP latency buffer |
+| `CAP_PROP_BUFFERSIZE` | `2` | OpenCV capture buffer size |
+
+</details>
 
 ---
 
 ## 🤖 Supported LLM Providers
 
-The Q&A system uses [litellm](https://github.com/BerriAI/litellm) to route to 100+ LLM providers through a single `LLM_MODEL` variable.
+The Q&A system supports any OpenAI-compatible LLM provider through a single `LLM_MODEL` variable.
 
-| Provider | `LLM_MODEL` value | Required env var |
-|---|---|---|
-| OpenAI | `openai/gpt-4o-mini` | `OPENAI_API_KEY` |
-| OpenAI (GPT-4o) | `openai/gpt-4o` | `OPENAI_API_KEY` |
-| Ollama (local) | `ollama/llama3` | `OLLAMA_API_BASE` (e.g. `http://localhost:11434`) |
-| Groq (free tier) | `groq/llama3-8b-8192` | `GROQ_API_KEY` |
-| Anthropic | `anthropic/claude-3-haiku-20240307` | `ANTHROPIC_API_KEY` |
+| Provider | `LLM_MODEL` value | Required env var | Notes |
+|---|---|---|---|
+| Groq (free tier) | `groq/llama-3.1-8b-instant` | `GROQ_API_KEY` | Recommended -- fast, free |
+| OpenAI | `openai/gpt-4o-mini` | `OPENAI_API_KEY` | Paid |
+| xAI (Grok) | `xai/grok-2-latest` | `XAI_API_KEY` | Paid |
+| Ollama (local) | `ollama/llama3` | `OLLAMA_API_BASE` (e.g. `http://localhost:11434`) | Runs on device CPU |
 
 Switch providers by changing one line in `.env`:
 
 ```bash
-LLM_MODEL=openai/gpt-4o-mini    # OpenAI cloud
-LLM_MODEL=ollama/llama3          # local Ollama on Jetson
-LLM_MODEL=groq/llama3-8b-8192   # fast Groq cloud (free tier)
+LLM_MODEL=groq/llama-3.1-8b-instant   # fast Groq cloud (free tier)
+LLM_MODEL=openai/gpt-4o-mini          # OpenAI cloud (paid)
+LLM_MODEL=xai/grok-2-latest           # xAI Grok (paid)
 ```
 
-The Q&A engine uses a **LangChain SQL agent** (`create_sql_agent`) that automatically inspects the database schema, generates SQL, validates and executes it, self-corrects on errors (up to 3 retries), and formats a natural-language answer. All timestamps are displayed in IST.
+**How Q&A works** -- a lightweight two-step Text-to-SQL approach:
+1. LLM generates a SQL query from your natural language question (~700 tokens)
+2. Query runs against the local SQLite database
+3. LLM formats the raw results into a human-readable answer (~800 tokens)
+
+Total: ~1,500 tokens per question. Destructive queries (DROP, DELETE, etc.) are blocked. All timestamps are displayed in IST.
 
 ---
 
@@ -94,7 +122,7 @@ pip install -r requirements.txt
 * **Object Tracking** — Uses BoT-SORT or ByteTrack for persistent IDs.
 * **Adaptive Framerate** — Dynamically adjusts processing FPS to save power when the scene is empty.
 * **Telegram Notifications** — Sends text + snapshot images exactly at the moment of detection.
-* **LLM-powered Q&A** — Ask natural-language questions about alert history via Telegram `/ask` or CLI. Powered by LangChain SQL agent with multi-provider LLM support (OpenAI, Ollama, Groq, and more via litellm).
+* **LLM-powered Q&A** — Ask natural-language questions about alert history via Telegram `/ask` or CLI. Uses a lightweight Text-to-SQL approach (~1,500 tokens/query) with multi-provider support (Groq, OpenAI, xAI, Ollama).
 * **Async Telegram Bot** — Built with [python-telegram-bot](https://python-telegram-bot.org/) for non-blocking I/O, declarative command routing, and graceful shutdown.
 * **Configurable via `.env`** — Tune FPS, confidence thresholds, object classes, and camera backends.
 
@@ -104,7 +132,7 @@ pip install -r requirements.txt
 
 ```
 - **app/core/** – Core logic: interfaces (ports), state machines, detection/alert policies, configuration, QA service, and pipeline.
-- **app/adapters/** – Implementations of interfaces for camera input, detection (YOLO/TensorRT), tracking, alert delivery, LLM (litellm), Telegram bot, and telemetry.
+- **app/adapters/** – Implementations of interfaces for camera input, detection (YOLO/TensorRT), tracking, alert delivery, LLM client, Telegram bot, and telemetry.
 - **app/app/** – Executable scripts for running the system, live preview, and Telegram Q&A bot.
 - **app/tools/** – Tools like exporting YOLO models to TensorRT engines, and CLI Q&A.
 - **tests/** – Unit and integration tests for policies, QA service, and overall behavior.
@@ -244,8 +272,8 @@ LLM_MODEL=openai/gpt-4o-mini
 
 | Component | Before | After |
 |---|---|---|
-| LLM client | Hand-rolled `requests.post` to OpenAI API | **litellm** — universal gateway for 100+ providers |
-| Text-to-SQL | Manual prompt engineering, regex SQL extraction, 1 retry | **LangChain `create_sql_agent`** — ReAct reasoning, schema introspection, 3 auto-retries |
+| LLM client | Hand-rolled `requests.post` to OpenAI API | `ChatOpenAI` routed to provider-specific endpoints (Groq, xAI, OpenAI) |
+| Text-to-SQL | Manual prompt engineering, regex SQL extraction, 1 retry | Lightweight 2-call approach: LLM generates SQL, executes, LLM formats answer (~1,500 tokens) |
 | Telegram bot | Raw `getUpdates` polling loop with `requests` | **python-telegram-bot** — async `Application` with `CommandHandler`, graceful shutdown |
 | Config | 4 LLM vars + 2 polling tunables | 1 model string (`LLM_MODEL`) |
 
