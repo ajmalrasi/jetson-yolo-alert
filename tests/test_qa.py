@@ -1,21 +1,16 @@
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
-
-from langchain_community.utilities import SQLDatabase
+from unittest.mock import MagicMock
 
 from app.core.alert_history import AlertHistoryStore
 from app.core.qa import QAService
 
 
 def _make_db(tmp_path, alerts=None):
-    """Create an AlertHistoryStore with optional seed data and return both
-    the store and a SQLDatabase instance pointing to the same file."""
     db_path = str(tmp_path / "alerts.db")
     store = AlertHistoryStore(db_path)
     for alert in alerts or []:
         store.insert_alert(**alert)
-    sql_db = SQLDatabase.from_uri(f"sqlite:///{db_path}")
-    return store, sql_db
+    return store, db_path
 
 
 def _seed_two_alerts():
@@ -39,57 +34,58 @@ def _seed_two_alerts():
     ]
 
 
-def test_answer_question_calls_agent(tmp_path):
-    """QAService should delegate to create_sql_agent and return its output."""
-    _, sql_db = _make_db(tmp_path, _seed_two_alerts())
+def test_generate_sql_and_answer(tmp_path):
+    """QAService calls LLM twice: once for SQL, once for answer formatting."""
+    _, db_path = _make_db(tmp_path, _seed_two_alerts())
+
     fake_llm = MagicMock()
+    sql_response = MagicMock()
+    sql_response.content = "SELECT COUNT(*) as total FROM alerts;"
+    answer_response = MagicMock()
+    answer_response.content = "There were 2 alerts today."
+    fake_llm.invoke.side_effect = [sql_response, answer_response]
 
-    fake_agent = MagicMock()
-    fake_agent.invoke.return_value = {
-        "output": "There were 2 alerts: person at 15:30 IST and dog at 19:30 IST."
-    }
+    svc = QAService(db_path=db_path, llm=fake_llm)
+    answer = svc.answer_question("how many alerts?")
 
-    svc = QAService(db=sql_db, llm=fake_llm)
-    with patch("app.core.qa.create_sql_agent", return_value=fake_agent) as mock_create:
-        answer = svc.answer_question("what were all the detections?")
-
-    mock_create.assert_called_once()
-    fake_agent.invoke.assert_called_once()
+    assert fake_llm.invoke.call_count == 2
     assert "2 alerts" in answer
-    assert "person" in answer
 
 
 def test_no_llm_returns_config_message(tmp_path):
-    _, sql_db = _make_db(tmp_path)
-    svc = QAService(db=sql_db, llm=None)
+    _, db_path = _make_db(tmp_path)
+    svc = QAService(db_path=db_path, llm=None)
     answer = svc.answer_question("how many alerts today?")
     assert "LLM is not configured" in answer
 
 
 def test_empty_question_returns_message(tmp_path):
-    _, sql_db = _make_db(tmp_path)
+    _, db_path = _make_db(tmp_path)
     fake_llm = MagicMock()
-    svc = QAService(db=sql_db, llm=fake_llm)
+    svc = QAService(db_path=db_path, llm=fake_llm)
     answer = svc.answer_question("   ")
     assert "Please provide a question" in answer
 
 
-def test_agent_exception_returns_error(tmp_path):
-    """If the SQL agent raises, the user gets a friendly error instead of a traceback."""
-    _, sql_db = _make_db(tmp_path, _seed_two_alerts())
+def test_unsafe_sql_blocked(tmp_path):
+    """If LLM generates a destructive query, it should be blocked."""
+    _, db_path = _make_db(tmp_path, _seed_two_alerts())
+
     fake_llm = MagicMock()
+    sql_response = MagicMock()
+    sql_response.content = "DROP TABLE alerts;"
+    fake_llm.invoke.return_value = sql_response
 
-    def _explode(*_a, **_kw):
-        raise RuntimeError("LLM connection failed")
-
-    svc = QAService(db=sql_db, llm=fake_llm)
-    with patch("app.core.qa.create_sql_agent", side_effect=_explode):
-        answer = svc.answer_question("how many alerts?")
-
+    svc = QAService(db_path=db_path, llm=fake_llm)
+    answer = svc.answer_question("delete everything")
     assert "went wrong" in answer.lower()
 
 
-def test_db_has_expected_tables(tmp_path):
-    """The SQLDatabase wrapper should see the 'alerts' table."""
-    _, sql_db = _make_db(tmp_path, _seed_two_alerts())
-    assert "alerts" in sql_db.get_usable_table_names()
+def test_execute_sql_returns_rows(tmp_path):
+    """_execute_sql should return formatted table rows."""
+    _, db_path = _make_db(tmp_path, _seed_two_alerts())
+    svc = QAService(db_path=db_path, llm=None)
+    result = svc._execute_sql("SELECT count, trigger_classes FROM alerts ORDER BY ts;")
+    assert "count" in result
+    assert "person" in result
+    assert "dog" in result
