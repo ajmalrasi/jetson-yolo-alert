@@ -214,7 +214,13 @@ class QAService:
             image_path = None
             if "image_path" in cols and rows[0]["image_path"]:
                 image_path = str(rows[0]["image_path"])
-            lines = [f"({len(rows)} detections found)", " | ".join(cols)]
+            is_aggregate = len(rows) == 1 and any(
+                k != k.lower() or "(" in k for k in cols
+            )
+            lines = []
+            if not is_aggregate:
+                lines.append(f"({len(rows)} detections found)")
+            lines.append(" | ".join(cols))
             for r in rows:
                 lines.append(" | ".join(str(r[c]) for c in cols))
             return "\n".join(lines), image_path
