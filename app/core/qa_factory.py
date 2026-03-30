@@ -31,4 +31,5 @@ def build_qa_service(cfg: Config) -> QAService:
     if model and model != "none":
         llm = build_chat_llm(model=model)
 
-    return QAService(db_path=db_path, llm=llm)
+    all_classes = sorted(cfg.trigger_classes | cfg.draw_classes)
+    return QAService(db_path=db_path, llm=llm, class_names=tuple(all_classes))

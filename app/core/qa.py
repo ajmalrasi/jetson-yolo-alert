@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sqlite3
 from dataclasses import dataclass, field
@@ -12,6 +13,13 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
 logger = logging.getLogger(__name__)
+qa_trace = logging.getLogger("qa.trace")
+qa_trace.setLevel(logging.DEBUG)
+_log_dir = os.getenv("SAVE_DIR", "/workspace/work/alerts")
+os.makedirs(_log_dir, exist_ok=True)
+_fh = logging.FileHandler(os.path.join(_log_dir, "qa_trace.log"))
+_fh.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+qa_trace.addHandler(_fh)
 
 
 @dataclass(frozen=True)
@@ -41,32 +49,68 @@ You are a SQLite expert. Given the schema and question, write ONE SELECT query.
 
 {schema}
 
-Rules:
-- ts is stored as ISO-8601 UTC. Current time: {now_utc} UTC ({now_ist} IST). User is in IST (UTC+5:30).
-- For "today" in IST, convert to UTC range: WHERE ts >= datetime('{today_utc_start}') AND ts < datetime('{tomorrow_utc_start}')
-- Classes are JSON arrays in TEXT columns. Use json_each() or LIKE '%"classname"%' to filter.
+Timestamp format & timezone rules:
+- ts column stores UTC timestamps as plain text in format YYYY-MM-DDTHH:MM:SS (no timezone suffix).
+- Current time: {now_utc} UTC = {now_ist} IST.
+- The user is in India (IST = UTC+5:30). ALL user time references (today, morning, midnight, 3 AM, etc.) are in IST.
+- You MUST convert IST times to UTC before querying. IST is 5 hours 30 minutes AHEAD of UTC.
+  Formula: UTC = IST − 5:30. Examples: midnight IST (00:00) = previous day 18:30 UTC; 3:00 AM IST = previous day 21:30 UTC; 6:00 AM IST = 00:30 UTC same day.
+- Pre-computed boundaries for "today" (IST): ts >= '{today_utc_start}' AND ts < '{tomorrow_utc_start}'
+- Pre-computed boundaries for "yesterday" (IST): ts >= '{yesterday_utc_start}' AND ts < '{today_utc_start}'
+- Use plain string comparison with ts (do NOT use datetime() or strftime() functions on the ts column).
+- For hour-based queries (e.g. "at midnight", "at 3 AM", "in the morning"), convert the IST hour range to UTC and use: ts >= 'YYYY-MM-DDTHH:MM:SS' AND ts < 'YYYY-MM-DDTHH:MM:SS'
+- IMPORTANT: If the user does NOT mention a specific time range (no "today", "yesterday", "this week", etc.), default to TODAY's range: ts >= '{today_utc_start}' AND ts < '{tomorrow_utc_start}'
+
+Detection & class rules:
+- Each row is one alert. The "count" column is the number of objects detected in that alert.
+- Generic questions ("how many detections", "how many alerts", "how many objects") should query ALL rows — do NOT add a class filter unless the user names a specific class.
+- Known class names: {class_names}. Only filter by class when the user explicitly mentions one of these.
+- Classes are JSON arrays in TEXT columns. Use LIKE '%"classname"%' to filter.
 - When filtering by a class name, ALWAYS search BOTH trigger_classes AND context_classes:
   WHERE (trigger_classes LIKE '%"dog"%' OR context_classes LIKE '%"dog"%')
 - When the user asks for a picture/image/photo/pic, always include image_path in SELECT and add WHERE image_path IS NOT NULL.
 - Return ONLY the SQL query, nothing else. No markdown, no explanation."""
 
 _ANSWER_PROMPT = """\
-You answer questions about object-detection alerts. User is in India (IST).
-Convert any UTC timestamps to IST (UTC+5:30) when displaying.
-Current time: {now_ist}
+You answer questions about a home security camera's object-detection alerts.
+Current time: {now_ist}. All timestamps in the data are already in IST.
 
 Question: {question}
-SQL result: {result}
+SQL result (already filtered to match the question): {result}
 
-Give a concise, helpful answer based on the data. If result is empty, say no matching data was found."""
+Rules for your answer:
+- The SQL result is already filtered for the user's question. If it says "(N detections found)", trust that number — those N rows match what the user asked about.
+- Be short and conversational, like texting a friend. One or two sentences max.
+- Use plain numbers: "5 dogs detected today" — not tables, not bullet lists, not timestamps unless asked.
+- If the user asked for a time or "when", say something like "last one was at 3:15 PM".
+- If result says "no rows" or "0 matches", say "none found" or similar.
+- Do NOT dump raw data, do NOT list every row, do NOT show confidence scores unless asked."""
 
 MAX_RESULT_ROWS = 50
+
+_UTC_TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?")
+
+
+def _utc_results_to_ist(text: str) -> str:
+    """Convert all UTC ISO timestamps in SQL result text to IST for the answer LLM."""
+    from datetime import timedelta
+    offset = timedelta(hours=5, minutes=30)
+
+    def _replace(m: re.Match) -> str:
+        try:
+            dt = datetime.fromisoformat(m.group())
+            return (dt + offset).strftime("%Y-%m-%d %I:%M %p IST")
+        except ValueError:
+            return m.group()
+
+    return _UTC_TS_RE.sub(_replace, text)
 
 
 @dataclass
 class QAService:
     db_path: str
     llm: Optional[BaseChatModel] = None
+    class_names: Tuple[str, ...] = ()
     _schema: str = field(default=_SCHEMA, repr=False)
 
     def answer_question(self, question: str) -> AnswerResult:
@@ -80,27 +124,36 @@ class QAService:
                 "API key in .env to enable Q&A."
             )
 
+        from datetime import timedelta
+
         now_utc = datetime.now(tz=IST).astimezone(ZoneInfo("UTC"))
         now_ist = datetime.now(IST)
         today_ist = now_ist.date()
-        today_utc_start = datetime(
-            today_ist.year, today_ist.month, today_ist.day, tzinfo=IST
-        ).astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S")
-        from datetime import timedelta
-        tomorrow_utc_start = (
-            datetime(today_ist.year, today_ist.month, today_ist.day, tzinfo=IST)
-            + timedelta(days=1)
-        ).astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S")
+        _utc_fmt = "%Y-%m-%dT%H:%M:%S"
+
+        def _ist_day_to_utc(d) -> str:
+            return datetime(d.year, d.month, d.day, tzinfo=IST).astimezone(
+                ZoneInfo("UTC")
+            ).strftime(_utc_fmt)
+
+        today_utc_start = _ist_day_to_utc(today_ist)
+        tomorrow_utc_start = _ist_day_to_utc(today_ist + timedelta(days=1))
+        yesterday_utc_start = _ist_day_to_utc(today_ist - timedelta(days=1))
+        now_utc_str = now_utc.strftime(_utc_fmt)
+        now_ist_str = now_ist.strftime("%Y-%m-%d %H:%M:%S IST")
 
         try:
             sql = self._generate_sql(
-                clean_q, now_utc.strftime("%Y-%m-%dT%H:%M:%S"),
-                now_ist.strftime("%Y-%m-%d %H:%M:%S IST"),
+                clean_q, now_utc_str, now_ist_str,
                 today_utc_start, tomorrow_utc_start,
+                yesterday_utc_start,
+                ", ".join(self.class_names) if self.class_names else "unknown",
             )
             result_text, image_path = self._execute_sql(sql)
-            answer = self._format_answer(
-                clean_q, result_text, now_ist.strftime("%Y-%m-%d %H:%M:%S IST")
+            answer = self._format_answer(clean_q, _utc_results_to_ist(result_text), now_ist_str)
+            qa_trace.debug(
+                "Q: %s | UTC: %s | IST: %s | SQL: %s | Result: %s | Answer: %s",
+                clean_q, now_utc_str, now_ist_str, sql, result_text, answer,
             )
             return AnswerResult(text=answer, image_path=image_path)
         except Exception:
@@ -110,10 +163,12 @@ class QAService:
     def _generate_sql(
         self, question: str, now_utc: str, now_ist: str,
         today_utc_start: str, tomorrow_utc_start: str,
+        yesterday_utc_start: str, class_names: str,
     ) -> str:
         prompt = _SQL_PROMPT.format(
             schema=self._schema, now_utc=now_utc, now_ist=now_ist,
             today_utc_start=today_utc_start, tomorrow_utc_start=tomorrow_utc_start,
+            yesterday_utc_start=yesterday_utc_start, class_names=class_names,
         )
         resp = self.llm.invoke([
             SystemMessage(content=prompt),
@@ -123,11 +178,28 @@ class QAService:
         sql = re.sub(r"^```(?:sql)?\s*", "", sql)
         sql = re.sub(r"\s*```$", "", sql)
         sql = sql.strip().rstrip(";") + ";"
-        logger.info("Generated SQL: %s", sql)
 
         upper = sql.upper()
         if any(kw in upper for kw in ("DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "CREATE")):
             raise ValueError(f"Unsafe SQL blocked: {sql}")
+
+        if "ts >" not in sql and "ts >" not in sql.lower():
+            sql = self._inject_today_filter(sql, today_utc_start, tomorrow_utc_start)
+
+        logger.info("Generated SQL: %s", sql)
+        return sql
+
+    @staticmethod
+    def _inject_today_filter(sql: str, today_start: str, tomorrow_start: str) -> str:
+        """Add today's time boundary when the LLM omits one."""
+        time_clause = f"ts >= '{today_start}' AND ts < '{tomorrow_start}'"
+        upper = sql.upper()
+        if "WHERE" in upper:
+            sql = re.sub(r"(?i)\bWHERE\b", f"WHERE {time_clause} AND", sql, count=1)
+        elif "ORDER" in upper:
+            sql = re.sub(r"(?i)\bORDER\b", f"WHERE {time_clause} ORDER", sql, count=1)
+        elif sql.rstrip().endswith(";"):
+            sql = sql.rstrip()[:-1] + f" WHERE {time_clause};"
         return sql
 
     def _execute_sql(self, sql: str) -> Tuple[str, Optional[str]]:
@@ -137,12 +209,12 @@ class QAService:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(sql).fetchmany(MAX_RESULT_ROWS)
             if not rows:
-                return "(no rows)", None
+                return "(no rows — 0 matches)", None
             cols = rows[0].keys()
             image_path = None
             if "image_path" in cols and rows[0]["image_path"]:
                 image_path = str(rows[0]["image_path"])
-            lines = [" | ".join(cols)]
+            lines = [f"({len(rows)} detections found)", " | ".join(cols)]
             for r in rows:
                 lines.append(" | ".join(str(r[c]) for c in cols))
             return "\n".join(lines), image_path
