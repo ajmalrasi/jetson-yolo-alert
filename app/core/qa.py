@@ -79,7 +79,7 @@ Question: {question}
 SQL result (already filtered to match the question): {result}
 
 Rules for your answer:
-- The SQL result is already filtered for the user's question. If it says "(N detections found)", trust that number — those N rows match what the user asked about.
+- The SQL result is already filtered for the user's question. Every row in the result is a match.
 - Be short and conversational, like texting a friend. One or two sentences max.
 - Use plain numbers: "5 dogs detected today" — not tables, not bullet lists, not timestamps unless asked.
 - If the user asked for a time or "when", say something like "last one was at 3:15 PM".
@@ -214,13 +214,7 @@ class QAService:
             image_path = None
             if "image_path" in cols and rows[0]["image_path"]:
                 image_path = str(rows[0]["image_path"])
-            is_aggregate = len(rows) == 1 and any(
-                k != k.lower() or "(" in k for k in cols
-            )
-            lines = []
-            if not is_aggregate:
-                lines.append(f"({len(rows)} detections found)")
-            lines.append(" | ".join(cols))
+            lines = [" | ".join(cols)]
             for r in rows:
                 lines.append(" | ".join(str(r[c]) for c in cols))
             return "\n".join(lines), image_path

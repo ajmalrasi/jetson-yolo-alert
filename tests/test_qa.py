@@ -104,11 +104,13 @@ def test_utc_to_ist_no_false_match():
 # SQL execution: row count prefix & image extraction
 # ---------------------------------------------------------------------------
 
-def test_execute_sql_detection_count_prefix(tmp_path):
+def test_execute_sql_returns_header_and_rows(tmp_path):
     _, db_path = _make_db(tmp_path, _make_real_day_alerts())
     svc = QAService(db_path=db_path, llm=None)
     result, _ = svc._execute_sql("SELECT id, ts FROM alerts;")
-    assert result.startswith("(6 detections found)")
+    lines = result.strip().splitlines()
+    assert lines[0] == "id | ts"
+    assert len(lines) == 7  # 1 header + 6 data rows
 
 
 def test_execute_sql_no_rows(tmp_path):
@@ -138,7 +140,8 @@ def test_dog_query_returns_2(tmp_path):
     result, _ = svc._execute_sql(
         "SELECT * FROM alerts WHERE trigger_classes LIKE '%\"dog\"%' OR context_classes LIKE '%\"dog\"%';"
     )
-    assert "(2 detections found)" in result
+    data_lines = result.strip().splitlines()[1:]  # skip header
+    assert len(data_lines) == 2
 
 
 def test_person_query_returns_3(tmp_path):
@@ -147,7 +150,8 @@ def test_person_query_returns_3(tmp_path):
     result, _ = svc._execute_sql(
         "SELECT * FROM alerts WHERE trigger_classes LIKE '%\"person\"%' OR context_classes LIKE '%\"person\"%';"
     )
-    assert "(3 detections found)" in result
+    data_lines = result.strip().splitlines()[1:]
+    assert len(data_lines) == 3
 
 
 def test_motorcycle_in_context_only(tmp_path):
@@ -161,7 +165,8 @@ def test_motorcycle_in_context_only(tmp_path):
     result2, _ = svc._execute_sql(
         "SELECT * FROM alerts WHERE context_classes LIKE '%\"motorcycle\"%';"
     )
-    assert "(1 detections found)" in result2
+    data_lines = result2.strip().splitlines()[1:]
+    assert len(data_lines) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +180,8 @@ def test_ist_date_boundary_includes_utc_previous_day(tmp_path):
     result, _ = svc._execute_sql(
         "SELECT * FROM alerts WHERE ts >= '2026-03-29T18:30:00' AND ts < '2026-03-30T18:30:00';"
     )
-    assert "(6 detections found)" in result
+    data_lines = result.strip().splitlines()[1:]
+    assert len(data_lines) == 6
 
 
 def test_utc_midnight_excludes_ist_evening(tmp_path):
@@ -185,7 +191,8 @@ def test_utc_midnight_excludes_ist_evening(tmp_path):
     result, _ = svc._execute_sql(
         "SELECT * FROM alerts WHERE ts >= '2026-03-30T00:00:00' AND ts < '2026-03-31T00:00:00';"
     )
-    assert "(2 detections found)" in result
+    data_lines = result.strip().splitlines()[1:]
+    assert len(data_lines) == 2
 
 
 # ---------------------------------------------------------------------------
