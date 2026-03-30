@@ -71,16 +71,37 @@ Detection & class rules:
 - Return ONLY the SQL query, nothing else. No markdown, no explanation."""
 
 _ANSWER_PROMPT = """\
-You answer questions about object-detection alerts. User is in India (IST).
-Convert any UTC timestamps to IST (UTC+5:30) when displaying.
-Current time: {now_ist}
+You answer questions about a home security camera's object-detection alerts.
+Current time: {now_ist}. All timestamps in the data are already in IST.
 
 Question: {question}
 SQL result: {result}
 
-Give a concise, helpful answer based on the data. If result is empty, say no matching data was found."""
+Rules for your answer:
+- Be short and conversational, like texting a friend. One or two sentences max.
+- Use plain numbers: "47 people and 3 cars detected today" — not tables, not bullet lists, not timestamps unless asked.
+- If the user asked for a time or "when", say something like "last one was at 3:15 PM".
+- If result is empty, just say "none found" or similar.
+- Do NOT dump raw data, do NOT list every row, do NOT show confidence scores unless asked."""
 
 MAX_RESULT_ROWS = 50
+
+_UTC_TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+
+
+def _utc_results_to_ist(text: str) -> str:
+    """Convert all UTC ISO timestamps in SQL result text to IST for the answer LLM."""
+    from datetime import timedelta
+    offset = timedelta(hours=5, minutes=30)
+
+    def _replace(m: re.Match) -> str:
+        try:
+            dt = datetime.fromisoformat(m.group())
+            return (dt + offset).strftime("%Y-%m-%d %I:%M %p IST")
+        except ValueError:
+            return m.group()
+
+    return _UTC_TS_RE.sub(_replace, text)
 
 
 @dataclass
@@ -127,7 +148,7 @@ class QAService:
                 ", ".join(self.class_names) if self.class_names else "unknown",
             )
             result_text, image_path = self._execute_sql(sql)
-            answer = self._format_answer(clean_q, result_text, now_ist_str)
+            answer = self._format_answer(clean_q, _utc_results_to_ist(result_text), now_ist_str)
             qa_trace.debug(
                 "Q: %s | UTC: %s | IST: %s | SQL: %s | Result: %s | Answer: %s",
                 clean_q, now_utc_str, now_ist_str, sql, result_text, answer,
