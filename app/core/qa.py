@@ -59,6 +59,7 @@ Timestamp format & timezone rules:
 - Pre-computed boundaries for "yesterday" (IST): ts >= '{yesterday_utc_start}' AND ts < '{today_utc_start}'
 - Use plain string comparison with ts (do NOT use datetime() or strftime() functions on the ts column).
 - For hour-based queries (e.g. "at midnight", "at 3 AM", "in the morning"), convert the IST hour range to UTC and use: ts >= 'YYYY-MM-DDTHH:MM:SS' AND ts < 'YYYY-MM-DDTHH:MM:SS'
+- IMPORTANT: If the user does NOT mention a specific time range (no "today", "yesterday", "this week", etc.), default to TODAY's range: ts >= '{today_utc_start}' AND ts < '{tomorrow_utc_start}'
 
 Detection & class rules:
 - Each row is one alert. The "count" column is the number of objects detected in that alert.
@@ -177,11 +178,28 @@ class QAService:
         sql = re.sub(r"^```(?:sql)?\s*", "", sql)
         sql = re.sub(r"\s*```$", "", sql)
         sql = sql.strip().rstrip(";") + ";"
-        logger.info("Generated SQL: %s", sql)
 
         upper = sql.upper()
         if any(kw in upper for kw in ("DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "CREATE")):
             raise ValueError(f"Unsafe SQL blocked: {sql}")
+
+        if "ts >" not in sql and "ts >" not in sql.lower():
+            sql = self._inject_today_filter(sql, today_utc_start, tomorrow_utc_start)
+
+        logger.info("Generated SQL: %s", sql)
+        return sql
+
+    @staticmethod
+    def _inject_today_filter(sql: str, today_start: str, tomorrow_start: str) -> str:
+        """Add today's time boundary when the LLM omits one."""
+        time_clause = f"ts >= '{today_start}' AND ts < '{tomorrow_start}'"
+        upper = sql.upper()
+        if "WHERE" in upper:
+            sql = re.sub(r"(?i)\bWHERE\b", f"WHERE {time_clause} AND", sql, count=1)
+        elif "ORDER" in upper:
+            sql = re.sub(r"(?i)\bORDER\b", f"WHERE {time_clause} ORDER", sql, count=1)
+        elif sql.rstrip().endswith(";"):
+            sql = sql.rstrip()[:-1] + f" WHERE {time_clause};"
         return sql
 
     def _execute_sql(self, sql: str) -> Tuple[str, Optional[str]]:
