@@ -14,8 +14,12 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 logger = logging.getLogger(__name__)
 qa_trace = logging.getLogger("qa.trace")
-if os.getenv("QA_DEBUG"):
-    qa_trace.setLevel(logging.DEBUG)
+qa_trace.setLevel(logging.DEBUG)
+_log_dir = os.getenv("SAVE_DIR", "/workspace/work/alerts")
+os.makedirs(_log_dir, exist_ok=True)
+_fh = logging.FileHandler(os.path.join(_log_dir, "qa_trace.log"))
+_fh.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+qa_trace.addHandler(_fh)
 
 
 @dataclass(frozen=True)
@@ -56,8 +60,11 @@ Timestamp format & timezone rules:
 - Use plain string comparison with ts (do NOT use datetime() or strftime() functions on the ts column).
 - For hour-based queries (e.g. "at midnight", "at 3 AM", "in the morning"), convert the IST hour range to UTC and use: ts >= 'YYYY-MM-DDTHH:MM:SS' AND ts < 'YYYY-MM-DDTHH:MM:SS'
 
-Other rules:
-- Classes are JSON arrays in TEXT columns. Use json_each() or LIKE '%"classname"%' to filter.
+Detection & class rules:
+- Each row is one alert. The "count" column is the number of objects detected in that alert.
+- Generic questions ("how many detections", "how many alerts", "how many objects") should query ALL rows — do NOT add a class filter unless the user names a specific class.
+- Known class names: {class_names}. Only filter by class when the user explicitly mentions one of these.
+- Classes are JSON arrays in TEXT columns. Use LIKE '%"classname"%' to filter.
 - When filtering by a class name, ALWAYS search BOTH trigger_classes AND context_classes:
   WHERE (trigger_classes LIKE '%"dog"%' OR context_classes LIKE '%"dog"%')
 - When the user asks for a picture/image/photo/pic, always include image_path in SELECT and add WHERE image_path IS NOT NULL.
@@ -80,6 +87,7 @@ MAX_RESULT_ROWS = 50
 class QAService:
     db_path: str
     llm: Optional[BaseChatModel] = None
+    class_names: Tuple[str, ...] = ()
     _schema: str = field(default=_SCHEMA, repr=False)
 
     def answer_question(self, question: str) -> AnswerResult:
@@ -116,6 +124,7 @@ class QAService:
                 clean_q, now_utc_str, now_ist_str,
                 today_utc_start, tomorrow_utc_start,
                 yesterday_utc_start,
+                ", ".join(self.class_names) if self.class_names else "unknown",
             )
             result_text, image_path = self._execute_sql(sql)
             answer = self._format_answer(clean_q, result_text, now_ist_str)
@@ -131,12 +140,12 @@ class QAService:
     def _generate_sql(
         self, question: str, now_utc: str, now_ist: str,
         today_utc_start: str, tomorrow_utc_start: str,
-        yesterday_utc_start: str,
+        yesterday_utc_start: str, class_names: str,
     ) -> str:
         prompt = _SQL_PROMPT.format(
             schema=self._schema, now_utc=now_utc, now_ist=now_ist,
             today_utc_start=today_utc_start, tomorrow_utc_start=tomorrow_utc_start,
-            yesterday_utc_start=yesterday_utc_start,
+            yesterday_utc_start=yesterday_utc_start, class_names=class_names,
         )
         resp = self.llm.invoke([
             SystemMessage(content=prompt),
