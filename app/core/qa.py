@@ -86,7 +86,7 @@ Rules for your answer:
 
 MAX_RESULT_ROWS = 50
 
-_UTC_TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+_UTC_TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?")
 
 
 def _utc_results_to_ist(text: str) -> str:
@@ -190,12 +190,12 @@ class QAService:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(sql).fetchmany(MAX_RESULT_ROWS)
             if not rows:
-                return "(no rows)", None
+                return "(no rows — 0 matches)", None
             cols = rows[0].keys()
             image_path = None
             if "image_path" in cols and rows[0]["image_path"]:
                 image_path = str(rows[0]["image_path"])
-            lines = [" | ".join(cols)]
+            lines = [f"({len(rows)} rows returned)", " | ".join(cols)]
             for r in rows:
                 lines.append(" | ".join(str(r[c]) for c in cols))
             return "\n".join(lines), image_path
