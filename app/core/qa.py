@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sqlite3
 from dataclasses import dataclass, field
@@ -12,6 +13,9 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
 logger = logging.getLogger(__name__)
+qa_trace = logging.getLogger("qa.trace")
+if os.getenv("QA_DEBUG"):
+    qa_trace.setLevel(logging.DEBUG)
 
 
 @dataclass(frozen=True)
@@ -104,17 +108,20 @@ class QAService:
         today_utc_start = _ist_day_to_utc(today_ist)
         tomorrow_utc_start = _ist_day_to_utc(today_ist + timedelta(days=1))
         yesterday_utc_start = _ist_day_to_utc(today_ist - timedelta(days=1))
+        now_utc_str = now_utc.strftime(_utc_fmt)
+        now_ist_str = now_ist.strftime("%Y-%m-%d %H:%M:%S IST")
 
         try:
             sql = self._generate_sql(
-                clean_q, now_utc.strftime(_utc_fmt),
-                now_ist.strftime("%Y-%m-%d %H:%M:%S IST"),
+                clean_q, now_utc_str, now_ist_str,
                 today_utc_start, tomorrow_utc_start,
                 yesterday_utc_start,
             )
             result_text, image_path = self._execute_sql(sql)
-            answer = self._format_answer(
-                clean_q, result_text, now_ist.strftime("%Y-%m-%d %H:%M:%S IST")
+            answer = self._format_answer(clean_q, result_text, now_ist_str)
+            qa_trace.debug(
+                "Q: %s | UTC: %s | IST: %s | SQL: %s | Result: %s | Answer: %s",
+                clean_q, now_utc_str, now_ist_str, sql, result_text, answer,
             )
             return AnswerResult(text=answer, image_path=image_path)
         except Exception:
