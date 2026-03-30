@@ -3,9 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
+import logging
 import os
 import sqlite3
 from typing import Iterable, List, Optional, Tuple
+from zoneinfo import ZoneInfo
+
+logger = logging.getLogger(__name__)
+
+IST = ZoneInfo("Asia/Kolkata")
+
+_UTC_TS_FMT = "%Y-%m-%dT%H:%M:%S"
 
 
 @dataclass(frozen=True)
@@ -63,7 +71,17 @@ class AlertHistoryStore:
                 column_def="TEXT NOT NULL DEFAULT '[]'",
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts)")
+            self._migrate_ts_format(conn)
             conn.commit()
+
+    @staticmethod
+    def _migrate_ts_format(conn: sqlite3.Connection) -> None:
+        """Strip '+00:00' suffix from legacy timestamps for consistent text comparisons."""
+        updated = conn.execute(
+            "UPDATE alerts SET ts = REPLACE(ts, '+00:00', '') WHERE ts LIKE '%+00:00'"
+        ).rowcount
+        if updated:
+            logger.info("Migrated %d timestamps: stripped +00:00 suffix", updated)
 
     def insert_alert(
         self,
@@ -74,7 +92,7 @@ class AlertHistoryStore:
         trigger_classes: Optional[Iterable[str]] = None,
         context_classes: Optional[Iterable[str]] = None,
     ) -> None:
-        ts_iso = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+        ts_iso = datetime.fromtimestamp(ts, tz=timezone.utc).strftime(_UTC_TS_FMT)
         trigger_classes_json = _classes_to_json(trigger_classes)
         context_classes_json = _classes_to_json(context_classes)
         with self._connect() as conn:
@@ -95,8 +113,8 @@ class AlertHistoryStore:
             conn.commit()
 
     def get_alerts_between(self, start_ts: datetime, end_ts: datetime) -> List[AlertRecord]:
-        start_utc = _to_utc(start_ts).isoformat()
-        end_utc = _to_utc(end_ts).isoformat()
+        start_utc = _to_utc(start_ts).strftime(_UTC_TS_FMT)
+        end_utc = _to_utc(end_ts).strftime(_UTC_TS_FMT)
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -110,7 +128,7 @@ class AlertHistoryStore:
         return [_row_to_record(row) for row in rows]
 
     def get_alerts_on_date(self, date_str: str) -> List[AlertRecord]:
-        day = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        day = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=IST)
         next_day = day + timedelta(days=1)
         return self.get_alerts_between(day, next_day)
 
@@ -172,9 +190,12 @@ def _ensure_column(
 
 
 def _row_to_record(row: sqlite3.Row) -> AlertRecord:
+    ts = datetime.fromisoformat(str(row["ts"]))
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
     return AlertRecord(
         id=int(row["id"]),
-        ts=datetime.fromisoformat(str(row["ts"])),
+        ts=ts,
         count=int(row["count"]),
         best_conf=float(row["best_conf"]),
         image_path=row["image_path"],

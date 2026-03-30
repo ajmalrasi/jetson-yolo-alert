@@ -41,9 +41,18 @@ You are a SQLite expert. Given the schema and question, write ONE SELECT query.
 
 {schema}
 
-Rules:
-- ts is stored as ISO-8601 UTC. Current time: {now_utc} UTC ({now_ist} IST). User is in IST (UTC+5:30).
-- For "today" in IST, convert to UTC range: WHERE ts >= datetime('{today_utc_start}') AND ts < datetime('{tomorrow_utc_start}')
+Timestamp format & timezone rules:
+- ts column stores UTC timestamps as plain text in format YYYY-MM-DDTHH:MM:SS (no timezone suffix).
+- Current time: {now_utc} UTC = {now_ist} IST.
+- The user is in India (IST = UTC+5:30). ALL user time references (today, morning, midnight, 3 AM, etc.) are in IST.
+- You MUST convert IST times to UTC before querying. IST is 5 hours 30 minutes AHEAD of UTC.
+  Formula: UTC = IST − 5:30. Examples: midnight IST (00:00) = previous day 18:30 UTC; 3:00 AM IST = previous day 21:30 UTC; 6:00 AM IST = 00:30 UTC same day.
+- Pre-computed boundaries for "today" (IST): ts >= '{today_utc_start}' AND ts < '{tomorrow_utc_start}'
+- Pre-computed boundaries for "yesterday" (IST): ts >= '{yesterday_utc_start}' AND ts < '{today_utc_start}'
+- Use plain string comparison with ts (do NOT use datetime() or strftime() functions on the ts column).
+- For hour-based queries (e.g. "at midnight", "at 3 AM", "in the morning"), convert the IST hour range to UTC and use: ts >= 'YYYY-MM-DDTHH:MM:SS' AND ts < 'YYYY-MM-DDTHH:MM:SS'
+
+Other rules:
 - Classes are JSON arrays in TEXT columns. Use json_each() or LIKE '%"classname"%' to filter.
 - When filtering by a class name, ALWAYS search BOTH trigger_classes AND context_classes:
   WHERE (trigger_classes LIKE '%"dog"%' OR context_classes LIKE '%"dog"%')
@@ -80,23 +89,28 @@ class QAService:
                 "API key in .env to enable Q&A."
             )
 
+        from datetime import timedelta
+
         now_utc = datetime.now(tz=IST).astimezone(ZoneInfo("UTC"))
         now_ist = datetime.now(IST)
         today_ist = now_ist.date()
-        today_utc_start = datetime(
-            today_ist.year, today_ist.month, today_ist.day, tzinfo=IST
-        ).astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S")
-        from datetime import timedelta
-        tomorrow_utc_start = (
-            datetime(today_ist.year, today_ist.month, today_ist.day, tzinfo=IST)
-            + timedelta(days=1)
-        ).astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S")
+        _utc_fmt = "%Y-%m-%dT%H:%M:%S"
+
+        def _ist_day_to_utc(d) -> str:
+            return datetime(d.year, d.month, d.day, tzinfo=IST).astimezone(
+                ZoneInfo("UTC")
+            ).strftime(_utc_fmt)
+
+        today_utc_start = _ist_day_to_utc(today_ist)
+        tomorrow_utc_start = _ist_day_to_utc(today_ist + timedelta(days=1))
+        yesterday_utc_start = _ist_day_to_utc(today_ist - timedelta(days=1))
 
         try:
             sql = self._generate_sql(
-                clean_q, now_utc.strftime("%Y-%m-%dT%H:%M:%S"),
+                clean_q, now_utc.strftime(_utc_fmt),
                 now_ist.strftime("%Y-%m-%d %H:%M:%S IST"),
                 today_utc_start, tomorrow_utc_start,
+                yesterday_utc_start,
             )
             result_text, image_path = self._execute_sql(sql)
             answer = self._format_answer(
@@ -110,10 +124,12 @@ class QAService:
     def _generate_sql(
         self, question: str, now_utc: str, now_ist: str,
         today_utc_start: str, tomorrow_utc_start: str,
+        yesterday_utc_start: str,
     ) -> str:
         prompt = _SQL_PROMPT.format(
             schema=self._schema, now_utc=now_utc, now_ist=now_ist,
             today_utc_start=today_utc_start, tomorrow_utc_start=tomorrow_utc_start,
+            yesterday_utc_start=yesterday_utc_start,
         )
         resp = self.llm.invoke([
             SystemMessage(content=prompt),
