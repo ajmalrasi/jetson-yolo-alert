@@ -195,7 +195,7 @@ class QAService:
             image_path = None
             if "image_path" in cols and rows[0]["image_path"]:
                 image_path = str(rows[0]["image_path"])
-            lines = [f"({len(rows)} rows returned)", " | ".join(cols)]
+            lines = [f"({len(rows)} detections found)", " | ".join(cols)]
             for r in rows:
                 lines.append(" | ".join(str(r[c]) for c in cols))
             return "\n".join(lines), image_path
