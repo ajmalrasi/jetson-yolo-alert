@@ -63,12 +63,14 @@ Timestamp format & timezone rules:
 
 Detection & class rules:
 - Each row is one alert. The "count" column is the number of objects detected in that alert.
+- "How many detections" or "total detections" means total objects → use SUM(count). "How many alerts" means rows → use COUNT(*). Default to SUM(count) when ambiguous.
 - Generic questions ("how many detections", "how many alerts", "how many objects") should query ALL rows — do NOT add a class filter unless the user names a specific class.
 - Known class names: {class_names}. Only filter by class when the user explicitly mentions one of these.
 - Classes are JSON arrays in TEXT columns. Use LIKE '%"classname"%' to filter.
 - When filtering by a class name, ALWAYS search BOTH trigger_classes AND context_classes:
   WHERE (trigger_classes LIKE '%"dog"%' OR context_classes LIKE '%"dog"%')
 - When the user asks for a picture/image/photo/pic, always include image_path in SELECT and add WHERE image_path IS NOT NULL.
+- If the question asks for both a total AND a breakdown (e.g. "total detections and per-day stats"), use a subquery or CTE so the total is computed in SQL, not left for post-processing.
 - Return ONLY the SQL query, nothing else. No markdown, no explanation."""
 
 _ANSWER_PROMPT = """\
@@ -83,7 +85,9 @@ Rules for your answer:
 - Be short and conversational, like texting a friend. One or two sentences max.
 - Use plain numbers: "5 dogs detected today" — not tables, not bullet lists, not timestamps unless asked.
 - If the user asked for a time or "when", say something like "last one was at 3:15 PM".
+- If the user asked for a specific screenshot/image/photo (e.g. "show me the 2nd screenshot"), just say "Here you go" or "Here's the screenshot" — do NOT describe how many detections there were.
 - If result says "no rows" or "0 matches", say "none found" or similar.
+- If the data says "showing first N rows only", do NOT try to compute totals by adding up the visible rows — the data is incomplete. Just summarize the visible trends and mention the data is partial.
 - Do NOT dump raw data, do NOT list every row, do NOT show confidence scores unless asked."""
 
 MAX_RESULT_ROWS = 50
@@ -142,23 +146,29 @@ class QAService:
         now_utc_str = now_utc.strftime(_utc_fmt)
         now_ist_str = now_ist.strftime("%Y-%m-%d %H:%M:%S IST")
 
-        try:
-            sql = self._generate_sql(
-                clean_q, now_utc_str, now_ist_str,
-                today_utc_start, tomorrow_utc_start,
-                yesterday_utc_start,
-                ", ".join(self.class_names) if self.class_names else "unknown",
-            )
-            result_text, image_path = self._execute_sql(sql)
-            answer = self._format_answer(clean_q, _utc_results_to_ist(result_text), now_ist_str)
-            qa_trace.debug(
-                "Q: %s | UTC: %s | IST: %s | SQL: %s | Result: %s | Answer: %s",
-                clean_q, now_utc_str, now_ist_str, sql, result_text, answer,
-            )
-            return AnswerResult(text=answer, image_path=image_path)
-        except Exception:
-            logger.exception("QA failed for: %s", clean_q)
-            return AnswerResult("Something went wrong while processing your question. Please try again.")
+        gen_args = (
+            clean_q, now_utc_str, now_ist_str,
+            today_utc_start, tomorrow_utc_start,
+            yesterday_utc_start,
+            ", ".join(self.class_names) if self.class_names else "unknown",
+        )
+        last_err = None
+        for attempt in range(2):
+            try:
+                sql = self._generate_sql(*gen_args)
+                result_text, image_path = self._execute_sql(sql)
+                answer = self._format_answer(clean_q, _utc_results_to_ist(result_text), now_ist_str)
+                qa_trace.debug(
+                    "Q: %s | UTC: %s | IST: %s | SQL: %s | Result: %s | Answer: %s",
+                    clean_q, now_utc_str, now_ist_str, sql, result_text, answer,
+                )
+                return AnswerResult(text=answer, image_path=image_path)
+            except Exception as exc:
+                last_err = exc
+                if attempt == 0:
+                    logger.warning("QA attempt 1 failed for: %s — retrying", clean_q)
+        logger.exception("QA failed after retry for: %s", clean_q, exc_info=last_err)
+        return AnswerResult("Something went wrong while processing your question. Please try again.")
 
     def _generate_sql(
         self, question: str, now_utc: str, now_ist: str,
@@ -207,9 +217,12 @@ class QAService:
         conn = sqlite3.connect(self.db_path, timeout=5)
         try:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(sql).fetchmany(MAX_RESULT_ROWS)
+            rows = conn.execute(sql).fetchmany(MAX_RESULT_ROWS + 1)
             if not rows:
                 return "(no rows — 0 matches)", None
+            truncated = len(rows) > MAX_RESULT_ROWS
+            if truncated:
+                rows = rows[:MAX_RESULT_ROWS]
             cols = rows[0].keys()
             image_path = None
             if "image_path" in cols and rows[0]["image_path"]:
@@ -217,6 +230,8 @@ class QAService:
             lines = [" | ".join(cols)]
             for r in rows:
                 lines.append(" | ".join(str(r[c]) for c in cols))
+            if truncated:
+                lines.append(f"(showing first {MAX_RESULT_ROWS} rows only — totals from this data will be incomplete)")
             return "\n".join(lines), image_path
         finally:
             conn.close()

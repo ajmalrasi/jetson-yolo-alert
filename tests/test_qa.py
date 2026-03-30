@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 from app.core.alert_history import AlertHistoryStore
-from app.core.qa import QAService, _utc_results_to_ist
+from app.core.qa import MAX_RESULT_ROWS, QAService, _utc_results_to_ist
 
 
 def _make_db(tmp_path, alerts=None):
@@ -275,3 +275,157 @@ def test_execute_sql_returns_rows(tmp_path):
     assert "count" in result
     assert "person" in result
     assert "dog" in result
+
+
+# ---------------------------------------------------------------------------
+# Truncation warning for large result sets
+# ---------------------------------------------------------------------------
+
+def _make_many_alerts(n):
+    """Generate n alerts spread over time."""
+    return [
+        dict(
+            ts=datetime(2026, 3, 15, 10, i % 60, tzinfo=timezone.utc).timestamp(),
+            count=1,
+            best_conf=0.80,
+            image_path=None,
+            trigger_classes=["person"],
+            context_classes=["person"],
+        )
+        for i in range(n)
+    ]
+
+
+def test_truncation_warning_when_exceeding_max_rows(tmp_path):
+    """Results exceeding MAX_RESULT_ROWS should include a truncation warning."""
+    _, db_path = _make_db(tmp_path, _make_many_alerts(MAX_RESULT_ROWS + 10))
+    svc = QAService(db_path=db_path, llm=None)
+    result, _ = svc._execute_sql("SELECT * FROM alerts;")
+    lines = result.strip().splitlines()
+    assert f"showing first {MAX_RESULT_ROWS} rows only" in lines[-1]
+    data_lines = [l for l in lines[1:] if not l.startswith("(")]
+    assert len(data_lines) == MAX_RESULT_ROWS
+
+
+def test_no_truncation_warning_under_limit(tmp_path):
+    """Results under the limit should NOT have a truncation warning."""
+    _, db_path = _make_db(tmp_path, _make_real_day_alerts())
+    svc = QAService(db_path=db_path, llm=None)
+    result, _ = svc._execute_sql("SELECT * FROM alerts;")
+    assert "showing first" not in result
+
+
+# ---------------------------------------------------------------------------
+# LIMIT/OFFSET queries — no misleading prefix
+# ---------------------------------------------------------------------------
+
+def test_limit_offset_returns_single_row(tmp_path):
+    """LIMIT 1 OFFSET 1 should return exactly one data row, no count prefix."""
+    _, db_path = _make_db(tmp_path, _make_real_day_alerts())
+    svc = QAService(db_path=db_path, llm=None)
+    result, img = svc._execute_sql(
+        "SELECT image_path FROM alerts WHERE trigger_classes LIKE '%\"dog\"%' ORDER BY ts LIMIT 1 OFFSET 1;"
+    )
+    lines = result.strip().splitlines()
+    assert lines[0] == "image_path"
+    assert len(lines) == 2  # header + 1 data row
+    assert "detections found" not in result
+    assert img == "/workspace/work/alerts/snap_dog2.jpg"
+
+
+# ---------------------------------------------------------------------------
+# _inject_today_filter
+# ---------------------------------------------------------------------------
+
+def test_inject_today_filter_adds_where_clause():
+    sql = "SELECT * FROM alerts;"
+    result = QAService._inject_today_filter(sql, "2026-03-29T18:30:00", "2026-03-30T18:30:00")
+    assert "ts >= '2026-03-29T18:30:00'" in result
+    assert "ts < '2026-03-30T18:30:00'" in result
+    assert "WHERE" in result
+
+
+def test_inject_today_filter_prepends_to_existing_where():
+    sql = "SELECT * FROM alerts WHERE count > 3;"
+    result = QAService._inject_today_filter(sql, "2026-03-29T18:30:00", "2026-03-30T18:30:00")
+    assert "WHERE ts >= '2026-03-29T18:30:00' AND ts < '2026-03-30T18:30:00' AND count > 3" in result
+
+
+def test_inject_today_filter_before_order_by():
+    sql = "SELECT * FROM alerts ORDER BY ts DESC;"
+    result = QAService._inject_today_filter(sql, "2026-03-29T18:30:00", "2026-03-30T18:30:00")
+    assert "WHERE ts >=" in result
+    assert result.index("WHERE") < result.index("ORDER")
+
+
+# ---------------------------------------------------------------------------
+# SUM(count) vs COUNT(*) aggregates
+# ---------------------------------------------------------------------------
+
+def test_sum_count_aggregate(tmp_path):
+    """SUM(count) should total the count column, not the number of rows."""
+    alerts = [
+        dict(ts=datetime(2026, 3, 29, 19, 0, tzinfo=timezone.utc).timestamp(),
+             count=4, best_conf=0.88, image_path=None,
+             trigger_classes=["person"], context_classes=["person"]),
+        dict(ts=datetime(2026, 3, 29, 20, 0, tzinfo=timezone.utc).timestamp(),
+             count=5, best_conf=0.75, image_path=None,
+             trigger_classes=["person"], context_classes=["person"]),
+    ]
+    _, db_path = _make_db(tmp_path, alerts)
+    svc = QAService(db_path=db_path, llm=None)
+    result, _ = svc._execute_sql("SELECT SUM(count) FROM alerts;")
+    assert "9" in result  # 4 + 5 = 9
+
+
+def test_count_star_aggregate(tmp_path):
+    """COUNT(*) should return the number of rows, not the sum of count column."""
+    alerts = [
+        dict(ts=datetime(2026, 3, 29, 19, 0, tzinfo=timezone.utc).timestamp(),
+             count=4, best_conf=0.88, image_path=None,
+             trigger_classes=["person"], context_classes=["person"]),
+        dict(ts=datetime(2026, 3, 29, 20, 0, tzinfo=timezone.utc).timestamp(),
+             count=5, best_conf=0.75, image_path=None,
+             trigger_classes=["person"], context_classes=["person"]),
+    ]
+    _, db_path = _make_db(tmp_path, alerts)
+    svc = QAService(db_path=db_path, llm=None)
+    result, _ = svc._execute_sql("SELECT COUNT(*) FROM alerts;")
+    assert "2" in result  # 2 rows, not 9
+
+
+# ---------------------------------------------------------------------------
+# Retry on SQL execution failure
+# ---------------------------------------------------------------------------
+
+def test_retry_recovers_from_bad_sql(tmp_path):
+    """If first SQL fails, retry should succeed with valid SQL."""
+    _, db_path = _make_db(tmp_path, _seed_two_alerts())
+
+    fake_llm = MagicMock()
+    bad_sql = MagicMock()
+    bad_sql.content = "SELECT (SELECT id, ts FROM alerts) FROM alerts;"  # invalid
+    good_sql = MagicMock()
+    good_sql.content = "SELECT COUNT(*) as total FROM alerts;"
+    answer = MagicMock()
+    answer.content = "There were 2 alerts."
+    fake_llm.invoke.side_effect = [bad_sql, good_sql, answer]
+
+    svc = QAService(db_path=db_path, llm=fake_llm)
+    result = svc.answer_question("how many alerts?")
+    assert "2 alerts" in result.text
+    assert fake_llm.invoke.call_count == 3  # bad SQL + good SQL + answer
+
+
+def test_retry_fails_both_attempts(tmp_path):
+    """If both attempts fail, should return error message."""
+    _, db_path = _make_db(tmp_path, _seed_two_alerts())
+
+    fake_llm = MagicMock()
+    bad_sql = MagicMock()
+    bad_sql.content = "SELECT (SELECT id, ts FROM alerts) FROM alerts;"
+    fake_llm.invoke.return_value = bad_sql
+
+    svc = QAService(db_path=db_path, llm=fake_llm)
+    result = svc.answer_question("how many?")
+    assert "went wrong" in result.text.lower()
