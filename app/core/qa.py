@@ -59,18 +59,23 @@ Timestamp format & timezone rules:
 - Pre-computed boundaries for "yesterday" (IST): ts >= '{yesterday_utc_start}' AND ts < '{today_utc_start}'
 - Use plain string comparison with ts (do NOT use datetime() or strftime() functions on the ts column).
 - For hour-based queries (e.g. "at midnight", "at 3 AM", "in the morning"), convert the IST hour range to UTC and use: ts >= 'YYYY-MM-DDTHH:MM:SS' AND ts < 'YYYY-MM-DDTHH:MM:SS'
+- When GROUP BY hour of day, convert UTC hour to IST: (CAST(SUBSTR(ts,12,2) AS INT) + 5) % 24 AS ist_hour. This approximates IST (±30 min) and ensures reported hours make sense to the user.
 - IMPORTANT: If the user does NOT mention a specific time range (no "today", "yesterday", "this week", etc.), default to TODAY's range: ts >= '{today_utc_start}' AND ts < '{tomorrow_utc_start}'
 
 Detection & class rules:
 - Each row is one alert. The "count" column is the number of objects detected in that alert.
 - "How many detections" or "total detections" means total objects → use SUM(count). "How many alerts" means rows → use COUNT(*). Default to SUM(count) when ambiguous.
+- "Average/mean detections per day" means SUM(count) divided by the number of distinct days — NOT AVG(count) (which is average objects per alert row).
 - Generic questions ("how many detections", "how many alerts", "how many objects") should query ALL rows — do NOT add a class filter unless the user names a specific class.
 - Known class names: {class_names}. Only filter by class when the user explicitly mentions one of these.
 - Classes are JSON arrays in TEXT columns. Use LIKE '%"classname"%' to filter.
 - When filtering by a class name, ALWAYS search BOTH trigger_classes AND context_classes:
   WHERE (trigger_classes LIKE '%"dog"%' OR context_classes LIKE '%"dog"%')
 - When the user asks for a picture/image/photo/pic, always include image_path in SELECT and add WHERE image_path IS NOT NULL.
-- If the question asks for both a total AND a breakdown (e.g. "total detections and per-day stats"), use a subquery or CTE so the total is computed in SQL, not left for post-processing.
+- If the question asks for both a total AND a breakdown (e.g. "total detections and per-day stats"), use a single CTE and aggregate in the outer SELECT. Example pattern:
+  WITH d AS (SELECT SUBSTR(ts,1,10) AS day, SUM(count) AS day_total FROM alerts WHERE ... GROUP BY day)
+  SELECT SUM(day_total) AS total, ROUND(1.0*SUM(day_total)/COUNT(*),1) AS avg_per_day FROM d;
+  Do NOT use sub-selects that return multiple columns.
 - Return ONLY the SQL query, nothing else. No markdown, no explanation."""
 
 _ANSWER_PROMPT = """\
