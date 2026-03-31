@@ -1,8 +1,14 @@
+import sqlite3
 from datetime import datetime, timezone
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from app.core.alert_history import AlertHistoryStore
-from app.core.qa import MAX_RESULT_ROWS, QAService, _utc_results_to_ist
+from app.core.qa import (
+    AnswerResult,
+    QAService,
+    _extract_image_path,
+    _utc_results_to_ist,
+)
 
 
 def _make_db(tmp_path, alerts=None):
@@ -49,7 +55,6 @@ def _make_real_day_alerts():
 def test_timestamps_stored_without_offset(tmp_path):
     """Stored timestamps must be bare UTC (no +00:00) for reliable text comparison."""
     store, db_path = _make_db(tmp_path, _make_real_day_alerts())
-    import sqlite3
     conn = sqlite3.connect(db_path)
     rows = conn.execute("SELECT ts FROM alerts").fetchall()
     conn.close()
@@ -61,7 +66,6 @@ def test_timestamps_stored_without_offset(tmp_path):
 def test_legacy_offset_migrated_on_init(tmp_path):
     """Opening the DB should strip +00:00 from any legacy rows."""
     db_path = str(tmp_path / "alerts.db")
-    import sqlite3
     conn = sqlite3.connect(db_path)
     conn.execute("""CREATE TABLE alerts (
         id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL,
@@ -80,7 +84,7 @@ def test_legacy_offset_migrated_on_init(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# UTC → IST conversion for answer LLM
+# UTC → IST conversion for answer display
 # ---------------------------------------------------------------------------
 
 def test_utc_to_ist_basic():
@@ -101,142 +105,68 @@ def test_utc_to_ist_no_false_match():
 
 
 # ---------------------------------------------------------------------------
-# SQL execution: row count prefix & image extraction
+# Image path extraction
 # ---------------------------------------------------------------------------
 
-def test_execute_sql_returns_header_and_rows(tmp_path):
-    _, db_path = _make_db(tmp_path, _make_real_day_alerts())
-    svc = QAService(db_path=db_path, llm=None)
-    result, _ = svc._execute_sql("SELECT id, ts FROM alerts;")
-    lines = result.strip().splitlines()
-    assert lines[0] == "id | ts"
-    assert len(lines) == 7  # 1 header + 6 data rows
+def test_extract_image_path_jpg():
+    text = "Here is the result: /workspace/work/alerts/snap_dog1.jpg found."
+    assert _extract_image_path(text) == "/workspace/work/alerts/snap_dog1.jpg"
 
 
-def test_execute_sql_no_rows(tmp_path):
-    _, db_path = _make_db(tmp_path, _make_real_day_alerts())
-    svc = QAService(db_path=db_path, llm=None)
-    result, img = svc._execute_sql("SELECT * FROM alerts WHERE count > 999;")
-    assert "0 matches" in result
-    assert img is None
+def test_extract_image_path_png():
+    text = "Image at /tmp/test.png"
+    assert _extract_image_path(text) == "/tmp/test.png"
 
 
-def test_execute_sql_extracts_first_image(tmp_path):
-    _, db_path = _make_db(tmp_path, _make_real_day_alerts())
-    svc = QAService(db_path=db_path, llm=None)
-    _, img = svc._execute_sql(
-        "SELECT image_path FROM alerts WHERE trigger_classes LIKE '%dog%' ORDER BY ts;"
-    )
-    assert img == "/workspace/work/alerts/snap_dog1.jpg"
+def test_extract_image_path_none():
+    assert _extract_image_path("no image here, count=5") is None
 
 
 # ---------------------------------------------------------------------------
-# Class filtering queries against real data
+# SQL views created by AlertHistoryStore
 # ---------------------------------------------------------------------------
 
-def test_dog_query_returns_2(tmp_path):
+def test_views_created_on_init(tmp_path):
+    """init_db should create v_daily_stats and v_hourly_stats views."""
     _, db_path = _make_db(tmp_path, _make_real_day_alerts())
-    svc = QAService(db_path=db_path, llm=None)
-    result, _ = svc._execute_sql(
-        "SELECT * FROM alerts WHERE trigger_classes LIKE '%\"dog\"%' OR context_classes LIKE '%\"dog\"%';"
-    )
-    data_lines = result.strip().splitlines()[1:]  # skip header
-    assert len(data_lines) == 2
+    conn = sqlite3.connect(db_path)
+    views = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='view'"
+    ).fetchall()]
+    conn.close()
+    assert "v_daily_stats" in views
+    assert "v_hourly_stats" in views
 
 
-def test_person_query_returns_3(tmp_path):
+def test_v_daily_stats_returns_ist_dates(tmp_path):
+    """v_daily_stats should group by IST date, not UTC date."""
     _, db_path = _make_db(tmp_path, _make_real_day_alerts())
-    svc = QAService(db_path=db_path, llm=None)
-    result, _ = svc._execute_sql(
-        "SELECT * FROM alerts WHERE trigger_classes LIKE '%\"person\"%' OR context_classes LIKE '%\"person\"%';"
-    )
-    data_lines = result.strip().splitlines()[1:]
-    assert len(data_lines) == 3
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute(
+        "SELECT ist_date, total_detections FROM v_daily_stats ORDER BY ist_date"
+    ).fetchall()
+    conn.close()
+    dates = [r[0] for r in rows]
+    totals = {r[0]: r[1] for r in rows}
+    assert "2026-03-30" in dates
+    assert totals["2026-03-30"] == 6  # all 6 alerts fall on Mar 30 IST
 
 
-def test_motorcycle_in_context_only(tmp_path):
-    """Motorcycle appears only in context_classes, not trigger_classes."""
+def test_v_hourly_stats_returns_ist_hours(tmp_path):
+    """v_hourly_stats should use IST hours."""
     _, db_path = _make_db(tmp_path, _make_real_day_alerts())
-    svc = QAService(db_path=db_path, llm=None)
-    result, _ = svc._execute_sql(
-        "SELECT * FROM alerts WHERE trigger_classes LIKE '%\"motorcycle\"%';"
-    )
-    assert "0 matches" in result
-    result2, _ = svc._execute_sql(
-        "SELECT * FROM alerts WHERE context_classes LIKE '%\"motorcycle\"%';"
-    )
-    data_lines = result2.strip().splitlines()[1:]
-    assert len(data_lines) == 1
-
-
-# ---------------------------------------------------------------------------
-# IST date boundary queries
-# ---------------------------------------------------------------------------
-
-def test_ist_date_boundary_includes_utc_previous_day(tmp_path):
-    """2026-03-29T18:53 UTC = 2026-03-30 00:23 IST → should be in IST 'today' (Mar 30)."""
-    _, db_path = _make_db(tmp_path, _make_real_day_alerts())
-    svc = QAService(db_path=db_path, llm=None)
-    result, _ = svc._execute_sql(
-        "SELECT * FROM alerts WHERE ts >= '2026-03-29T18:30:00' AND ts < '2026-03-30T18:30:00';"
-    )
-    data_lines = result.strip().splitlines()[1:]
-    assert len(data_lines) == 6
-
-
-def test_utc_midnight_excludes_ist_evening(tmp_path):
-    """UTC midnight..midnight would miss IST evening entries — verifying the wrong range returns fewer."""
-    _, db_path = _make_db(tmp_path, _make_real_day_alerts())
-    svc = QAService(db_path=db_path, llm=None)
-    result, _ = svc._execute_sql(
-        "SELECT * FROM alerts WHERE ts >= '2026-03-30T00:00:00' AND ts < '2026-03-31T00:00:00';"
-    )
-    data_lines = result.strip().splitlines()[1:]
-    assert len(data_lines) == 2
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute(
+        "SELECT ist_hour, total_detections FROM v_hourly_stats ORDER BY total_detections DESC"
+    ).fetchall()
+    conn.close()
+    top_hour = rows[0][0]
+    assert top_hour == 0  # 2026-03-29T18:53 UTC = 00:23 IST → hour 0
 
 
 # ---------------------------------------------------------------------------
-# Original tests (kept for backwards compat)
+# QAService basics (no LLM)
 # ---------------------------------------------------------------------------
-
-def _seed_two_alerts():
-    return [
-        dict(
-            ts=datetime(2026, 3, 19, 10, 0, tzinfo=timezone.utc).timestamp(),
-            count=2,
-            best_conf=0.88,
-            image_path=None,
-            trigger_classes=["person"],
-            context_classes=["person", "car"],
-        ),
-        dict(
-            ts=datetime(2026, 3, 19, 14, 0, tzinfo=timezone.utc).timestamp(),
-            count=1,
-            best_conf=0.75,
-            image_path=None,
-            trigger_classes=["dog"],
-            context_classes=["dog"],
-        ),
-    ]
-
-
-def test_generate_sql_and_answer(tmp_path):
-    """QAService calls LLM twice: once for SQL, once for answer formatting."""
-    _, db_path = _make_db(tmp_path, _seed_two_alerts())
-
-    fake_llm = MagicMock()
-    sql_response = MagicMock()
-    sql_response.content = "SELECT COUNT(*) as total FROM alerts;"
-    answer_response = MagicMock()
-    answer_response.content = "There were 2 alerts today."
-    fake_llm.invoke.side_effect = [sql_response, answer_response]
-
-    svc = QAService(db_path=db_path, llm=fake_llm)
-    answer = svc.answer_question("how many alerts?")
-
-    assert fake_llm.invoke.call_count == 2
-    assert "2 alerts" in answer.text
-
 
 def test_no_llm_returns_config_message(tmp_path):
     _, db_path = _make_db(tmp_path)
@@ -247,123 +177,104 @@ def test_no_llm_returns_config_message(tmp_path):
 
 def test_empty_question_returns_message(tmp_path):
     _, db_path = _make_db(tmp_path)
-    fake_llm = MagicMock()
-    svc = QAService(db_path=db_path, llm=fake_llm)
+    svc = QAService(db_path=db_path, llm=None)
     answer = svc.answer_question("   ")
     assert "Please provide a question" in answer.text
 
 
-def test_unsafe_sql_blocked(tmp_path):
-    """If LLM generates a destructive query, it should be blocked."""
-    _, db_path = _make_db(tmp_path, _seed_two_alerts())
+# ---------------------------------------------------------------------------
+# QAService with mocked LLM agent
+# ---------------------------------------------------------------------------
 
-    fake_llm = MagicMock()
-    sql_response = MagicMock()
-    sql_response.content = "DROP TABLE alerts;"
-    fake_llm.invoke.return_value = sql_response
+def _svc_with_mock_agent(tmp_path, alerts=None):
+    """Build a QAService with llm=None then inject a mock agent."""
+    _, db_path = _make_db(tmp_path, alerts or _make_real_day_alerts())
+    svc = QAService(db_path=db_path, llm=None)
+    svc._agent = MagicMock()
+    return svc
 
-    svc = QAService(db_path=db_path, llm=fake_llm)
-    answer = svc.answer_question("delete everything")
+
+def test_answer_question_returns_answer_result(tmp_path):
+    """answer_question should return an AnswerResult with text."""
+    svc = _svc_with_mock_agent(tmp_path)
+
+    from langchain_core.messages import AIMessage
+    svc._agent.invoke.return_value = {
+        "messages": [AIMessage(content="There were 6 alerts today.")]
+    }
+
+    answer = svc.answer_question("how many alerts?")
+    assert isinstance(answer, AnswerResult)
+    assert "6 alerts" in answer.text
+
+
+def test_answer_question_extracts_image(tmp_path):
+    """answer_question should extract image_path from agent messages."""
+    svc = _svc_with_mock_agent(tmp_path)
+
+    from langchain_core.messages import AIMessage, ToolMessage
+    svc._agent.invoke.return_value = {
+        "messages": [
+            AIMessage(content="", tool_calls=[{"id": "1", "name": "sql_db_query", "args": {"query": "SELECT image_path FROM alerts LIMIT 1"}}]),
+            ToolMessage(content="[('/workspace/work/alerts/snap_dog1.jpg',)]", tool_call_id="1"),
+            AIMessage(content="Here's the screenshot: /workspace/work/alerts/snap_dog1.jpg"),
+        ]
+    }
+
+    answer = svc.answer_question("show me a dog pic")
+    assert answer.image_path == "/workspace/work/alerts/snap_dog1.jpg"
+
+
+def test_answer_question_handles_exception(tmp_path):
+    """If the agent throws, answer_question should return a friendly error."""
+    svc = _svc_with_mock_agent(tmp_path)
+    svc._agent.invoke.side_effect = RuntimeError("boom")
+
+    answer = svc.answer_question("test")
     assert "went wrong" in answer.text.lower()
 
 
-def test_execute_sql_returns_rows(tmp_path):
-    """_execute_sql should return formatted table rows."""
-    _, db_path = _make_db(tmp_path, _seed_two_alerts())
+# ---------------------------------------------------------------------------
+# System prompt generation
+# ---------------------------------------------------------------------------
+
+def test_system_prompt_contains_class_names(tmp_path):
+    _, db_path = _make_db(tmp_path)
+    svc = QAService(db_path=db_path, llm=None, class_names=("dog", "person"))
+    prompt = svc._build_system_prompt()
+    assert "dog" in prompt
+    assert "person" in prompt
+
+
+def test_system_prompt_contains_today_boundary(tmp_path):
+    _, db_path = _make_db(tmp_path)
     svc = QAService(db_path=db_path, llm=None)
-    result, _ = svc._execute_sql("SELECT count, trigger_classes FROM alerts ORDER BY ts;")
-    assert "count" in result
-    assert "person" in result
-    assert "dog" in result
+    prompt = svc._build_system_prompt()
+    assert "today_utc_start" not in prompt  # should be formatted, not a placeholder
+    assert "T18:30:00" in prompt  # IST midnight = 18:30 UTC
 
 
-# ---------------------------------------------------------------------------
-# Truncation warning for large result sets
-# ---------------------------------------------------------------------------
-
-def _make_many_alerts(n):
-    """Generate n alerts spread over time."""
-    return [
-        dict(
-            ts=datetime(2026, 3, 15, 10, i % 60, tzinfo=timezone.utc).timestamp(),
-            count=1,
-            best_conf=0.80,
-            image_path=None,
-            trigger_classes=["person"],
-            context_classes=["person"],
-        )
-        for i in range(n)
-    ]
-
-
-def test_truncation_warning_when_exceeding_max_rows(tmp_path):
-    """Results exceeding MAX_RESULT_ROWS should include a truncation warning."""
-    _, db_path = _make_db(tmp_path, _make_many_alerts(MAX_RESULT_ROWS + 10))
+def test_system_prompt_contains_views(tmp_path):
+    _, db_path = _make_db(tmp_path)
     svc = QAService(db_path=db_path, llm=None)
-    result, _ = svc._execute_sql("SELECT * FROM alerts;")
-    lines = result.strip().splitlines()
-    assert f"showing first {MAX_RESULT_ROWS} rows only" in lines[-1]
-    data_lines = [l for l in lines[1:] if not l.startswith("(")]
-    assert len(data_lines) == MAX_RESULT_ROWS
+    prompt = svc._build_system_prompt()
+    assert "v_daily_stats" in prompt
+    assert "v_hourly_stats" in prompt
 
 
-def test_no_truncation_warning_under_limit(tmp_path):
-    """Results under the limit should NOT have a truncation warning."""
-    _, db_path = _make_db(tmp_path, _make_real_day_alerts())
+def test_system_prompt_contains_few_shot(tmp_path):
+    _, db_path = _make_db(tmp_path)
     svc = QAService(db_path=db_path, llm=None)
-    result, _ = svc._execute_sql("SELECT * FROM alerts;")
-    assert "showing first" not in result
+    prompt = svc._build_system_prompt()
+    assert "any dogs?" in prompt.lower() or "how many detections today" in prompt.lower()
 
 
 # ---------------------------------------------------------------------------
-# LIMIT/OFFSET queries — no misleading prefix
+# SUM(count) vs COUNT(*) — verified via raw SQL on test DB
 # ---------------------------------------------------------------------------
 
-def test_limit_offset_returns_single_row(tmp_path):
-    """LIMIT 1 OFFSET 1 should return exactly one data row, no count prefix."""
-    _, db_path = _make_db(tmp_path, _make_real_day_alerts())
-    svc = QAService(db_path=db_path, llm=None)
-    result, img = svc._execute_sql(
-        "SELECT image_path FROM alerts WHERE trigger_classes LIKE '%\"dog\"%' ORDER BY ts LIMIT 1 OFFSET 1;"
-    )
-    lines = result.strip().splitlines()
-    assert lines[0] == "image_path"
-    assert len(lines) == 2  # header + 1 data row
-    assert "detections found" not in result
-    assert img == "/workspace/work/alerts/snap_dog2.jpg"
-
-
-# ---------------------------------------------------------------------------
-# _inject_today_filter
-# ---------------------------------------------------------------------------
-
-def test_inject_today_filter_adds_where_clause():
-    sql = "SELECT * FROM alerts;"
-    result = QAService._inject_today_filter(sql, "2026-03-29T18:30:00", "2026-03-30T18:30:00")
-    assert "ts >= '2026-03-29T18:30:00'" in result
-    assert "ts < '2026-03-30T18:30:00'" in result
-    assert "WHERE" in result
-
-
-def test_inject_today_filter_prepends_to_existing_where():
-    sql = "SELECT * FROM alerts WHERE count > 3;"
-    result = QAService._inject_today_filter(sql, "2026-03-29T18:30:00", "2026-03-30T18:30:00")
-    assert "WHERE ts >= '2026-03-29T18:30:00' AND ts < '2026-03-30T18:30:00' AND count > 3" in result
-
-
-def test_inject_today_filter_before_order_by():
-    sql = "SELECT * FROM alerts ORDER BY ts DESC;"
-    result = QAService._inject_today_filter(sql, "2026-03-29T18:30:00", "2026-03-30T18:30:00")
-    assert "WHERE ts >=" in result
-    assert result.index("WHERE") < result.index("ORDER")
-
-
-# ---------------------------------------------------------------------------
-# SUM(count) vs COUNT(*) aggregates
-# ---------------------------------------------------------------------------
-
-def test_sum_count_aggregate(tmp_path):
-    """SUM(count) should total the count column, not the number of rows."""
+def test_sum_count_vs_count_star(tmp_path):
+    """SUM(count) should total objects; COUNT(*) should count rows."""
     alerts = [
         dict(ts=datetime(2026, 3, 29, 19, 0, tzinfo=timezone.utc).timestamp(),
              count=4, best_conf=0.88, image_path=None,
@@ -373,59 +284,35 @@ def test_sum_count_aggregate(tmp_path):
              trigger_classes=["person"], context_classes=["person"]),
     ]
     _, db_path = _make_db(tmp_path, alerts)
-    svc = QAService(db_path=db_path, llm=None)
-    result, _ = svc._execute_sql("SELECT SUM(count) FROM alerts;")
-    assert "9" in result  # 4 + 5 = 9
-
-
-def test_count_star_aggregate(tmp_path):
-    """COUNT(*) should return the number of rows, not the sum of count column."""
-    alerts = [
-        dict(ts=datetime(2026, 3, 29, 19, 0, tzinfo=timezone.utc).timestamp(),
-             count=4, best_conf=0.88, image_path=None,
-             trigger_classes=["person"], context_classes=["person"]),
-        dict(ts=datetime(2026, 3, 29, 20, 0, tzinfo=timezone.utc).timestamp(),
-             count=5, best_conf=0.75, image_path=None,
-             trigger_classes=["person"], context_classes=["person"]),
-    ]
-    _, db_path = _make_db(tmp_path, alerts)
-    svc = QAService(db_path=db_path, llm=None)
-    result, _ = svc._execute_sql("SELECT COUNT(*) FROM alerts;")
-    assert "2" in result  # 2 rows, not 9
+    conn = sqlite3.connect(db_path)
+    sum_count = conn.execute("SELECT SUM(count) FROM alerts").fetchone()[0]
+    count_star = conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
+    conn.close()
+    assert sum_count == 9   # 4 + 5
+    assert count_star == 2  # 2 rows
 
 
 # ---------------------------------------------------------------------------
-# Retry on SQL execution failure
+# IST date boundary queries
 # ---------------------------------------------------------------------------
 
-def test_retry_recovers_from_bad_sql(tmp_path):
-    """If first SQL fails, retry should succeed with valid SQL."""
-    _, db_path = _make_db(tmp_path, _seed_two_alerts())
-
-    fake_llm = MagicMock()
-    bad_sql = MagicMock()
-    bad_sql.content = "SELECT (SELECT id, ts FROM alerts) FROM alerts;"  # invalid
-    good_sql = MagicMock()
-    good_sql.content = "SELECT COUNT(*) as total FROM alerts;"
-    answer = MagicMock()
-    answer.content = "There were 2 alerts."
-    fake_llm.invoke.side_effect = [bad_sql, good_sql, answer]
-
-    svc = QAService(db_path=db_path, llm=fake_llm)
-    result = svc.answer_question("how many alerts?")
-    assert "2 alerts" in result.text
-    assert fake_llm.invoke.call_count == 3  # bad SQL + good SQL + answer
+def test_ist_date_boundary_includes_utc_previous_day(tmp_path):
+    """2026-03-29T18:53 UTC = 2026-03-30 00:23 IST → should be in IST 'today' (Mar 30)."""
+    _, db_path = _make_db(tmp_path, _make_real_day_alerts())
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute(
+        "SELECT COUNT(*) FROM alerts WHERE ts >= '2026-03-29T18:30:00' AND ts < '2026-03-30T18:30:00'"
+    ).fetchone()
+    conn.close()
+    assert rows[0] == 6
 
 
-def test_retry_fails_both_attempts(tmp_path):
-    """If both attempts fail, should return error message."""
-    _, db_path = _make_db(tmp_path, _seed_two_alerts())
-
-    fake_llm = MagicMock()
-    bad_sql = MagicMock()
-    bad_sql.content = "SELECT (SELECT id, ts FROM alerts) FROM alerts;"
-    fake_llm.invoke.return_value = bad_sql
-
-    svc = QAService(db_path=db_path, llm=fake_llm)
-    result = svc.answer_question("how many?")
-    assert "went wrong" in result.text.lower()
+def test_utc_midnight_excludes_ist_evening(tmp_path):
+    """UTC midnight..midnight would miss IST evening entries — verifying the wrong range returns fewer."""
+    _, db_path = _make_db(tmp_path, _make_real_day_alerts())
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute(
+        "SELECT COUNT(*) FROM alerts WHERE ts >= '2026-03-30T00:00:00' AND ts < '2026-03-31T00:00:00'"
+    ).fetchone()
+    conn.close()
+    assert rows[0] == 2

@@ -72,7 +72,30 @@ class AlertHistoryStore:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts)")
             self._migrate_ts_format(conn)
+            self._create_views(conn)
             conn.commit()
+
+    @staticmethod
+    def _create_views(conn: sqlite3.Connection) -> None:
+        conn.execute("""
+            CREATE VIEW IF NOT EXISTS v_daily_stats AS
+            SELECT
+                DATE(ts, '+5 hours', '+30 minutes') AS ist_date,
+                SUM(count)  AS total_detections,
+                COUNT(*)    AS alert_count,
+                ROUND(AVG(count), 2) AS avg_per_alert
+            FROM alerts
+            GROUP BY ist_date
+        """)
+        conn.execute("""
+            CREATE VIEW IF NOT EXISTS v_hourly_stats AS
+            SELECT
+                CAST(STRFTIME('%H', ts, '+5 hours', '+30 minutes') AS INT) AS ist_hour,
+                SUM(count)  AS total_detections,
+                COUNT(*)    AS alert_count
+            FROM alerts
+            GROUP BY ist_hour
+        """)
 
     @staticmethod
     def _migrate_ts_format(conn: sqlite3.Connection) -> None:
