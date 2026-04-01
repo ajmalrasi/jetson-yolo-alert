@@ -242,6 +242,8 @@ docker compose up -d ask-telegram
 
 This is transport-modular: Telegram is only an adapter. You can add a WhatsApp adapter later and reuse the same QA service.
 
+Agent-oriented debugging for `/ask` and QA traces: see [docs/AGENTS.md](docs/AGENTS.md).
+
 ---
 
 ## 🔄 Migration from v1
