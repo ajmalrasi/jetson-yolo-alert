@@ -3,14 +3,17 @@ from __future__ import annotations
 import logging
 import os
 import re
-import sqlite3
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Optional, Tuple
+from datetime import datetime, timedelta
+from typing import Literal, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+from langchain_community.agent_toolkits import SQLDatabaseToolkit
+from langchain_community.utilities import SQLDatabase
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.prebuilt import ToolNode
 
 logger = logging.getLogger(__name__)
 qa_trace = logging.getLogger("qa.trace")
@@ -31,69 +34,74 @@ class AnswerResult:
     def __str__(self) -> str:
         return self.text
 
+
 IST = ZoneInfo("Asia/Kolkata")
 
-_SCHEMA = """\
-TABLE: alerts
-  id            INTEGER PRIMARY KEY
-  ts            TEXT    -- ISO-8601 UTC timestamp
-  count         INTEGER -- number of objects detected
-  best_conf     REAL    -- highest confidence score
-  image_path    TEXT
-  trigger_classes TEXT  -- JSON array, e.g. '["person","car"]'
-  context_classes TEXT  -- JSON array, e.g. '["person","car","dog"]'
-INDEX: idx_alerts_ts ON alerts(ts)"""
+_IMAGE_PATH_RE = re.compile(r"(/\S+?\.(?:jpg|jpeg|png))", re.IGNORECASE)
+_UTC_TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?")
 
-_SQL_PROMPT = """\
-You are a SQLite expert. Given the schema and question, write ONE SELECT query.
+MAX_AGENT_ITERATIONS = 6
 
-{schema}
+_SYSTEM_PROMPT = """\
+You are an agent that answers questions about a home security camera's
+object-detection alerts by querying a SQLite database.
 
-Timestamp format & timezone rules:
-- ts column stores UTC timestamps as plain text in format YYYY-MM-DDTHH:MM:SS (no timezone suffix).
+You have access to tools for listing tables, reading schemas, and running
+SQL queries. Use them as needed.
+
+## Timezone rules
+- The `ts` column stores UTC timestamps as plain text (YYYY-MM-DDTHH:MM:SS).
 - Current time: {now_utc} UTC = {now_ist} IST.
-- The user is in India (IST = UTC+5:30). ALL user time references (today, morning, midnight, 3 AM, etc.) are in IST.
-- You MUST convert IST times to UTC before querying. IST is 5 hours 30 minutes AHEAD of UTC.
-  Formula: UTC = IST − 5:30. Examples: midnight IST (00:00) = previous day 18:30 UTC; 3:00 AM IST = previous day 21:30 UTC; 6:00 AM IST = 00:30 UTC same day.
+- The user is in India (IST = UTC+5:30). ALL user time references are in IST.
+- You MUST convert IST times to UTC before filtering the `ts` column.
+  Formula: UTC = IST − 5:30.
+  Examples: midnight IST = previous day 18:30 UTC; 3 AM IST = previous day 21:30 UTC.
 - Pre-computed boundaries for "today" (IST): ts >= '{today_utc_start}' AND ts < '{tomorrow_utc_start}'
 - Pre-computed boundaries for "yesterday" (IST): ts >= '{yesterday_utc_start}' AND ts < '{today_utc_start}'
-- Use plain string comparison with ts (do NOT use datetime() or strftime() functions on the ts column).
-- For hour-based queries (e.g. "at midnight", "at 3 AM", "in the morning"), convert the IST hour range to UTC and use: ts >= 'YYYY-MM-DDTHH:MM:SS' AND ts < 'YYYY-MM-DDTHH:MM:SS'
-- IMPORTANT: If the user does NOT mention a specific time range (no "today", "yesterday", "this week", etc.), default to TODAY's range: ts >= '{today_utc_start}' AND ts < '{tomorrow_utc_start}'
+- Use plain string comparison with ts (no datetime()/strftime() on the ts column).
+- If the user does NOT mention a specific time range, default to TODAY's range.
 
-Detection & class rules:
-- Each row is one alert. The "count" column is the number of objects detected in that alert.
-- Generic questions ("how many detections", "how many alerts", "how many objects") should query ALL rows — do NOT add a class filter unless the user names a specific class.
-- Known class names: {class_names}. Only filter by class when the user explicitly mentions one of these.
-- Classes are JSON arrays in TEXT columns. Use LIKE '%"classname"%' to filter.
-- When filtering by a class name, ALWAYS search BOTH trigger_classes AND context_classes:
-  WHERE (trigger_classes LIKE '%"dog"%' OR context_classes LIKE '%"dog"%')
-- When the user asks for a picture/image/photo/pic, always include image_path in SELECT and add WHERE image_path IS NOT NULL.
-- Return ONLY the SQL query, nothing else. No markdown, no explanation."""
+## Detection & class rules
+- Each row in `alerts` is one alert. `count` = number of objects in that alert.
+- "How many detections" / "total detections" → use SUM(count).
+  "How many alerts" → use COUNT(*).  Default to SUM(count) when ambiguous.
+- "Average/mean detections per day" → SUM(count) / number of distinct days, NOT AVG(count).
+- Known class names: {class_names}. Only filter by class when the user names one.
+- Classes are JSON arrays. Use LIKE '%"classname"%' to filter.
+  Always search BOTH trigger_classes AND context_classes.
+- For images/photos/screenshots: include image_path, add WHERE image_path IS NOT NULL.
 
-_ANSWER_PROMPT = """\
-You answer questions about a home security camera's object-detection alerts.
-Current time: {now_ist}. All timestamps in the data are already in IST.
+## Analytics views (use these for summary/analytics questions)
+- `v_daily_stats`: ist_date, total_detections, alert_count, avg_per_alert
+- `v_hourly_stats`: ist_hour (0-23 in IST), total_detections, alert_count
+These views already handle UTC→IST conversion — query them directly.
 
-Question: {question}
-SQL result (already filtered to match the question): {result}
+## Answer rules
+- After getting query results, give a SHORT conversational answer (1-2 sentences).
+- Use plain numbers: "5 dogs detected today", not tables or bullet lists.
+- If the user asked for a specific screenshot, just say "Here's the screenshot".
+- If no results, say "none found" or similar.
+- Do NOT dump raw data or list every row.
 
-Rules for your answer:
-- The SQL result is already filtered for the user's question. If it says "(N detections found)", trust that number — those N rows match what the user asked about.
-- Be short and conversational, like texting a friend. One or two sentences max.
-- Use plain numbers: "5 dogs detected today" — not tables, not bullet lists, not timestamps unless asked.
-- If the user asked for a time or "when", say something like "last one was at 3:15 PM".
-- If result says "no rows" or "0 matches", say "none found" or similar.
-- Do NOT dump raw data, do NOT list every row, do NOT show confidence scores unless asked."""
+## Few-shot examples
 
-MAX_RESULT_ROWS = 50
+Question: "how many detections today"
+SQL: SELECT SUM(count) FROM alerts WHERE ts >= '{today_utc_start}' AND ts < '{tomorrow_utc_start}';
 
-_UTC_TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?")
+Question: "any dogs?"
+SQL: SELECT * FROM alerts WHERE (trigger_classes LIKE '%"dog"%' OR context_classes LIKE '%"dog"%') AND ts >= '{today_utc_start}' AND ts < '{tomorrow_utc_start}';
+
+Question: "monthly summary with average per day and busiest hour"
+SQL: SELECT SUM(total_detections) AS total, ROUND(1.0*SUM(total_detections)/COUNT(*),1) AS avg_per_day FROM v_daily_stats WHERE ist_date >= '2026-03-01';
+Then: SELECT ist_hour, total_detections FROM v_hourly_stats ORDER BY total_detections DESC LIMIT 1;
+
+Question: "show me the 2nd dog screenshot"
+SQL: SELECT image_path FROM alerts WHERE (trigger_classes LIKE '%"dog"%' OR context_classes LIKE '%"dog"%') AND image_path IS NOT NULL AND ts >= '{today_utc_start}' AND ts < '{tomorrow_utc_start}' ORDER BY ts LIMIT 1 OFFSET 1;
+"""
 
 
 def _utc_results_to_ist(text: str) -> str:
-    """Convert all UTC ISO timestamps in SQL result text to IST for the answer LLM."""
-    from datetime import timedelta
+    """Convert all UTC ISO timestamps in text to IST for the user."""
     offset = timedelta(hours=5, minutes=30)
 
     def _replace(m: re.Match) -> str:
@@ -106,26 +114,58 @@ def _utc_results_to_ist(text: str) -> str:
     return _UTC_TS_RE.sub(_replace, text)
 
 
+def _extract_image_path(text: str) -> Optional[str]:
+    """Pull the first image path from agent output."""
+    m = _IMAGE_PATH_RE.search(text)
+    return m.group(1) if m else None
+
+
 @dataclass
 class QAService:
     db_path: str
     llm: Optional[BaseChatModel] = None
     class_names: Tuple[str, ...] = ()
-    _schema: str = field(default=_SCHEMA, repr=False)
+    _agent: object = field(default=None, repr=False, init=False)
 
-    def answer_question(self, question: str) -> AnswerResult:
-        clean_q = question.strip()
-        if not clean_q:
-            return AnswerResult("Please provide a question.")
+    def __post_init__(self):
+        if self.llm is not None:
+            self._agent = self._build_agent()
 
-        if self.llm is None:
-            return AnswerResult(
-                "LLM is not configured. Set LLM_MODEL and your provider's "
-                "API key in .env to enable Q&A."
-            )
+    def _build_agent(self):
+        db = SQLDatabase.from_uri(
+            f"sqlite:///{self.db_path}",
+            sample_rows_in_table_info=3,
+        )
+        toolkit = SQLDatabaseToolkit(db=db, llm=self.llm)
+        tools = toolkit.get_tools()
 
-        from datetime import timedelta
+        query_tool = next(t for t in tools if t.name == "sql_db_query")
+        all_tools = [query_tool]
+        tool_node = ToolNode(all_tools)
 
+        model_with_tools = self.llm.bind_tools(all_tools)
+
+        def agent_node(state: MessagesState):
+            response = model_with_tools.invoke(state["messages"])
+            return {"messages": [response]}
+
+        def should_continue(state: MessagesState) -> Literal["tools", "__end__"]:
+            last = state["messages"][-1]
+            if hasattr(last, "tool_calls") and last.tool_calls:
+                return "tools"
+            return "__end__"
+
+        builder = StateGraph(MessagesState)
+        builder.add_node("agent", agent_node)
+        builder.add_node("tools", tool_node)
+
+        builder.add_edge(START, "agent")
+        builder.add_conditional_edges("agent", should_continue)
+        builder.add_edge("tools", "agent")
+
+        return builder.compile()
+
+    def _build_system_prompt(self) -> str:
         now_utc = datetime.now(tz=IST).astimezone(ZoneInfo("UTC"))
         now_ist = datetime.now(IST)
         today_ist = now_ist.date()
@@ -136,94 +176,63 @@ class QAService:
                 ZoneInfo("UTC")
             ).strftime(_utc_fmt)
 
-        today_utc_start = _ist_day_to_utc(today_ist)
-        tomorrow_utc_start = _ist_day_to_utc(today_ist + timedelta(days=1))
-        yesterday_utc_start = _ist_day_to_utc(today_ist - timedelta(days=1))
-        now_utc_str = now_utc.strftime(_utc_fmt)
-        now_ist_str = now_ist.strftime("%Y-%m-%d %H:%M:%S IST")
+        return _SYSTEM_PROMPT.format(
+            now_utc=now_utc.strftime(_utc_fmt),
+            now_ist=now_ist.strftime("%Y-%m-%d %H:%M:%S IST"),
+            today_utc_start=_ist_day_to_utc(today_ist),
+            tomorrow_utc_start=_ist_day_to_utc(today_ist + timedelta(days=1)),
+            yesterday_utc_start=_ist_day_to_utc(today_ist - timedelta(days=1)),
+            class_names=", ".join(self.class_names) if self.class_names else "unknown",
+        )
+
+    def answer_question(self, question: str) -> AnswerResult:
+        clean_q = question.strip()
+        if not clean_q:
+            return AnswerResult("Please provide a question.")
+
+        if self._agent is None:
+            return AnswerResult(
+                "LLM is not configured. Set LLM_MODEL and your provider's "
+                "API key in .env to enable Q&A."
+            )
 
         try:
-            sql = self._generate_sql(
-                clean_q, now_utc_str, now_ist_str,
-                today_utc_start, tomorrow_utc_start,
-                yesterday_utc_start,
-                ", ".join(self.class_names) if self.class_names else "unknown",
+            system_prompt = self._build_system_prompt()
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=clean_q),
+            ]
+
+            result = self._agent.invoke(
+                {"messages": messages},
+                {"recursion_limit": MAX_AGENT_ITERATIONS},
             )
-            result_text, image_path = self._execute_sql(sql)
-            answer = self._format_answer(clean_q, _utc_results_to_ist(result_text), now_ist_str)
+
+            final_messages = result["messages"]
+            answer_text = ""
+            for msg in reversed(final_messages):
+                if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
+                    answer_text = msg.content.strip()
+                    break
+
+            if not answer_text:
+                answer_text = "I couldn't find an answer. Please try rephrasing."
+
+            answer_text = _utc_results_to_ist(answer_text)
+            image_path = _extract_image_path(
+                "\n".join(m.content for m in final_messages if hasattr(m, "content") and m.content)
+            )
+
             qa_trace.debug(
-                "Q: %s | UTC: %s | IST: %s | SQL: %s | Result: %s | Answer: %s",
-                clean_q, now_utc_str, now_ist_str, sql, result_text, answer,
+                "Q: %s | System: [%d chars] | Messages: %d | Answer: %s | Image: %s",
+                clean_q, len(system_prompt), len(final_messages),
+                answer_text, image_path,
             )
-            return AnswerResult(text=answer, image_path=image_path)
+
+            return AnswerResult(text=answer_text, image_path=image_path)
+
         except Exception:
             logger.exception("QA failed for: %s", clean_q)
-            return AnswerResult("Something went wrong while processing your question. Please try again.")
-
-    def _generate_sql(
-        self, question: str, now_utc: str, now_ist: str,
-        today_utc_start: str, tomorrow_utc_start: str,
-        yesterday_utc_start: str, class_names: str,
-    ) -> str:
-        prompt = _SQL_PROMPT.format(
-            schema=self._schema, now_utc=now_utc, now_ist=now_ist,
-            today_utc_start=today_utc_start, tomorrow_utc_start=tomorrow_utc_start,
-            yesterday_utc_start=yesterday_utc_start, class_names=class_names,
-        )
-        resp = self.llm.invoke([
-            SystemMessage(content=prompt),
-            HumanMessage(content=question),
-        ])
-        sql = resp.content.strip()
-        sql = re.sub(r"^```(?:sql)?\s*", "", sql)
-        sql = re.sub(r"\s*```$", "", sql)
-        sql = sql.strip().rstrip(";") + ";"
-
-        upper = sql.upper()
-        if any(kw in upper for kw in ("DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "CREATE")):
-            raise ValueError(f"Unsafe SQL blocked: {sql}")
-
-        if "ts >" not in sql and "ts >" not in sql.lower():
-            sql = self._inject_today_filter(sql, today_utc_start, tomorrow_utc_start)
-
-        logger.info("Generated SQL: %s", sql)
-        return sql
-
-    @staticmethod
-    def _inject_today_filter(sql: str, today_start: str, tomorrow_start: str) -> str:
-        """Add today's time boundary when the LLM omits one."""
-        time_clause = f"ts >= '{today_start}' AND ts < '{tomorrow_start}'"
-        upper = sql.upper()
-        if "WHERE" in upper:
-            sql = re.sub(r"(?i)\bWHERE\b", f"WHERE {time_clause} AND", sql, count=1)
-        elif "ORDER" in upper:
-            sql = re.sub(r"(?i)\bORDER\b", f"WHERE {time_clause} ORDER", sql, count=1)
-        elif sql.rstrip().endswith(";"):
-            sql = sql.rstrip()[:-1] + f" WHERE {time_clause};"
-        return sql
-
-    def _execute_sql(self, sql: str) -> Tuple[str, Optional[str]]:
-        """Execute SQL and return (result_text, first_image_path_or_None)."""
-        conn = sqlite3.connect(self.db_path, timeout=5)
-        try:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(sql).fetchmany(MAX_RESULT_ROWS)
-            if not rows:
-                return "(no rows — 0 matches)", None
-            cols = rows[0].keys()
-            image_path = None
-            if "image_path" in cols and rows[0]["image_path"]:
-                image_path = str(rows[0]["image_path"])
-            lines = [f"({len(rows)} detections found)", " | ".join(cols)]
-            for r in rows:
-                lines.append(" | ".join(str(r[c]) for c in cols))
-            return "\n".join(lines), image_path
-        finally:
-            conn.close()
-
-    def _format_answer(self, question: str, result: str, now_ist: str) -> str:
-        prompt = _ANSWER_PROMPT.format(
-            question=question, result=result, now_ist=now_ist,
-        )
-        resp = self.llm.invoke([HumanMessage(content=prompt)])
-        return resp.content.strip()
+            return AnswerResult(
+                "Something went wrong while processing your question. Please try again."
+            )
