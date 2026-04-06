@@ -15,12 +15,13 @@ import numpy as np
 
 
 def _viewer_html() -> bytes:
-    """Single-page viewer: document loads immediately; <img> holds the long-lived MJPEG stream."""
+    """Single-page viewer: HTML loads fast; MJPEG starts only after user clicks Start."""
     page = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <title>YOLO preview</title>
   <style>
     :root {
@@ -74,6 +75,39 @@ def _viewer_html() -> bytes:
       color: var(--muted);
       line-height: 1.45;
     }
+    .toolbar {
+      max-width: 1200px;
+      margin: 0 auto 1rem;
+      padding: 0 1rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      align-items: center;
+    }
+    .btn {
+      font: inherit;
+      font-size: 0.95rem;
+      font-weight: 600;
+      padding: 0.55rem 1.15rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .btn:hover:not(:disabled) {
+      border-color: var(--accent);
+      background: #243044;
+    }
+    .btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    .btn.primary {
+      background: rgba(61, 158, 255, 0.2);
+      border-color: var(--accent);
+      color: #b8d9ff;
+    }
     .frame-wrap {
       max-width: 1200px;
       margin: 0 auto 2rem;
@@ -85,6 +119,18 @@ def _viewer_html() -> bytes:
       border-radius: 12px;
       overflow: hidden;
       box-shadow: 0 24px 48px rgba(0, 0, 0, 0.35);
+      position: relative;
+      min-height: 220px;
+    }
+    .placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 220px;
+      padding: 2rem;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.95rem;
     }
     .card img {
       display: block;
@@ -92,8 +138,10 @@ def _viewer_html() -> bytes:
       height: auto;
       vertical-align: middle;
       background: #000;
-      min-height: 200px;
       object-fit: contain;
+    }
+    .card img.hidden {
+      display: none;
     }
     footer {
       text-align: center;
@@ -102,23 +150,60 @@ def _viewer_html() -> bytes:
       color: var(--muted);
     }
     code { font-size: 0.9em; background: rgba(0,0,0,0.25); padding: 0.1em 0.35em; border-radius: 4px; }
+    .version-strip {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0.5rem 1.5rem;
+      font-size: 0.8rem;
+      color: #6a7d95;
+      border-bottom: 1px solid var(--border);
+    }
+    .version-strip strong { color: #a8c4e8; }
   </style>
 </head>
 <body>
+  <p class="version-strip"><strong>Viewer v2</strong> — use the <strong>Start live preview</strong> button below. If you see no buttons, open <code>/</code> not <code>/stream</code>, rebuild the image, and hard-refresh (Ctrl+Shift+R).</p>
   <header>
     <h1>Live detection preview</h1>
     <span class="badge">MJPEG</span>
   </header>
   <p class="hint">
-    This page finishes loading right away; the video loads inside the frame below.
-    Direct stream URL: <code>/stream</code> (for VLC or embedding).
+    Open this page at <code>http://&lt;jetson-ip&gt;:port/</code> (root path). The stream does not load until you click Start.
+    VLC / raw feed only: <code>/stream</code>
   </p>
+  <div class="toolbar">
+    <button type="button" class="btn primary" id="btn-start">Start live preview</button>
+    <button type="button" class="btn" id="btn-stop" disabled>Stop</button>
+  </div>
   <div class="frame-wrap">
     <div class="card">
-      <img src="/stream" alt="Live YOLO preview stream" width="1280" height="720"/>
+      <div class="placeholder" id="placeholder">Preview idle — click <strong>Start live preview</strong> to connect.</div>
+      <img class="hidden" id="stream-img" alt="Live YOLO preview stream" width="1280" height="720"/>
     </div>
   </div>
-  <footer>jetson-yolo-alert preview</footer>
+  <footer>jetson-yolo-alert preview · viewer v2</footer>
+  <script>
+    (function () {
+      var img = document.getElementById("stream-img");
+      var ph = document.getElementById("placeholder");
+      var start = document.getElementById("btn-start");
+      var stop = document.getElementById("btn-stop");
+      start.addEventListener("click", function () {
+        img.src = "/stream?t=" + Date.now();
+        img.classList.remove("hidden");
+        ph.style.display = "none";
+        start.disabled = true;
+        stop.disabled = false;
+      });
+      stop.addEventListener("click", function () {
+        img.removeAttribute("src");
+        img.classList.add("hidden");
+        ph.style.display = "flex";
+        start.disabled = false;
+        stop.disabled = true;
+      });
+    })();
+  </script>
 </body>
 </html>
 """
@@ -227,7 +312,12 @@ class MjpegStreamServer:
                 if path in ("/", "/index.html"):
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.send_header("Cache-Control", "no-store")
+                    self.send_header(
+                        "Cache-Control",
+                        "no-store, no-cache, must-revalidate, max-age=0",
+                    )
+                    self.send_header("Pragma", "no-cache")
+                    self.send_header("Expires", "0")
                     self.end_headers()
                     self.wfile.write(html_body)
                     return

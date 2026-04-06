@@ -143,8 +143,12 @@ def main():
         )
         stream.start()
         print(
-            f"▶ Preview UI: http://<this-host>:{stream_port}/ "
-            f"(raw stream: /stream) — bind {bind}:{stream_port}"
+            f"▶ Browser UI (buttons): http://<this-host>:{stream_port}/  "
+            f"← open this path, not /stream"
+        )
+        print(
+            f"   /stream = video-only (no HTML). Rebuild image after code changes. "
+            f"Bind {bind}:{stream_port}"
         )
 
     if use_display:
