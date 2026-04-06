@@ -348,9 +348,14 @@ class Pipeline:
             TelemetryStep(telemetry=self.telemetry),
         ]
 
-    def run(self):
+    def iter_frames(self):
+        """Yield context after each full pipeline pass (for preview / tooling)."""
         ctx = Ctx(now=self.clock.now())
         while True:
             for step in self.steps:
                 ctx = step.run(ctx)
-            # loop continues forever; stopping conditions (signals) handled by outer app runner
+            yield ctx
+
+    def run(self):
+        for _ in self.iter_frames():
+            pass
