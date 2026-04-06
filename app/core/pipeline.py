@@ -1,7 +1,9 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional, Sequence, Protocol, Iterable, Any, Set, TYPE_CHECKING
-import os, cv2
+import os
+import time
+import cv2
 
 from .ports import Detection, Frame, Detector, ITracker, Camera, AlertSink, EventBus, Telemetry
 from .state import PresenceState
@@ -82,6 +84,7 @@ def _save_snapshot(path: str, frame: Frame, dets: Sequence[Detection], draw_ids:
 class RateStep(PipelineStep):
     clock: Clock
     rate: RatePolicy
+    telemetry: Telemetry
 
     def run(self, ctx: Ctx) -> Ctx:
         # decide target
@@ -92,7 +95,10 @@ class RateStep(PipelineStep):
             now = self.clock.now()
             dt = now - ctx.now
             if dt < min_dt:
+                t0 = time.perf_counter()
                 self.clock.sleep(min_dt - dt)
+                sleep_ms = (time.perf_counter() - t0) * 1000.0
+                self.telemetry.time_ms("rate_sleep_ms", sleep_ms)
         ctx.now = self.clock.now()
         return ctx
 
@@ -102,7 +108,10 @@ class ReadStep(PipelineStep):
     telemetry: Telemetry
 
     def run(self, ctx: Ctx) -> Ctx:
+        t0 = time.perf_counter()
         frame = self.cam.read()
+        read_ms = (time.perf_counter() - t0) * 1000.0
+        self.telemetry.time_ms("read_ms", read_ms)
         if frame is None:
             # no frame: keep timing monotonic
             ctx.now = ctx.now
@@ -129,9 +138,13 @@ class DetectStep(PipelineStep):
             return ctx
 
         try:
+            t0 = time.perf_counter()
             dets = self.det.detect(ctx.frame)
+            self.telemetry.time_ms("detect_ms", (time.perf_counter() - t0) * 1000.0)
             if self.tracker:
+                t1 = time.perf_counter()
                 dets = self.tracker.update(ctx.frame, dets)
+                self.telemetry.time_ms("track_ms", (time.perf_counter() - t1) * 1000.0)
             ctx.dets = dets
         except Exception as e:
             self.telemetry.incr("detect_errors")
@@ -182,6 +195,7 @@ class AlertStep(PipelineStep):
     raw_frames_dir: str = ""
 
     def run(self, ctx: Ctx) -> Ctx:
+        t_alert0 = time.perf_counter()
         # accumulate alerts whenever we see triggers (presence policy still tracks state separately)
         if ctx.trigger_dets:
             ids = [d.track_id for d in ctx.trigger_dets if d.track_id is not None] or [-1]
@@ -269,6 +283,7 @@ class AlertStep(PipelineStep):
             from .events import PersonLost
             self.event_bus.publish("presence", PersonLost(last_seen_t=ctx.state.last_t))
 
+        self.telemetry.time_ms("alert_ms", (time.perf_counter() - t_alert0) * 1000.0)
         return ctx
 
 
@@ -365,7 +380,7 @@ class Pipeline:
 
         # wire steps
         self.steps: list[PipelineStep] = [
-            RateStep(clock=self.clock, rate=eff_rate),
+            RateStep(clock=self.clock, rate=eff_rate, telemetry=self.telemetry),
             ReadStep(cam=self.camera, telemetry=self.telemetry),
             DetectStep(
                 det=self.detector,
@@ -383,8 +398,12 @@ class Pipeline:
         """Yield context after each full pipeline pass (for preview / tooling)."""
         ctx = Ctx(now=self.clock.now())
         while True:
+            loop_t0 = time.perf_counter()
             for step in self.steps:
                 ctx = step.run(ctx)
+            self.telemetry.time_ms(
+                "pipeline_loop_ms", (time.perf_counter() - loop_t0) * 1000.0
+            )
             yield ctx
 
     def run(self):

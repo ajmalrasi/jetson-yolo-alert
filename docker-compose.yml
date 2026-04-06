@@ -93,3 +93,22 @@ services:
         max-file: "3"
     command: python3 -m app.app.ask_telegram
 
+  # Optional: OTLP collector (4318) + Prometheus scrape (8889) for Grafana
+  # App: TELEMETRY_BACKEND=otlp, OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.102.1
+    network_mode: host
+    volumes:
+      - ./otel/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    profiles:
+      - observability
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    network_mode: host
+    environment:
+      - GF_USERS_ALLOW_SIGN_UP=false
+    profiles:
+      - observability
+

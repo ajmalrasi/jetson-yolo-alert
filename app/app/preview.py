@@ -18,7 +18,7 @@ from typing import Optional, Sequence, Set, Dict, List
 
 from app.adapters.camera_cv2 import Cv2Camera
 from app.adapters.detector_ultra import UltralyticsDetector
-from app.adapters.telemetry_log import LogTelemetry
+from app.adapters.telemetry_setup import get_telemetry
 from app.adapters.mjpeg_stream import MjpegStreamServer
 
 
@@ -215,7 +215,7 @@ def main():
         "yes",
     )
     clock = SystemClock()
-    tel = LogTelemetry()
+    tel = get_telemetry()
 
     cam = Cv2Camera(cfg.src, clock=clock)
 

@@ -8,7 +8,7 @@ from ..core.pipeline import Pipeline
 from ..adapters.camera_cv2 import Cv2Camera
 from ..adapters.detector_ultra import UltralyticsDetector
 from ..adapters.alerts_telegram import TelegramSink
-from ..adapters.telemetry_log import LogTelemetry
+from ..adapters.telemetry_setup import get_telemetry
 # External tracker not required when using YOLO.track()
 
 def resolve_path(p: str) -> str:
@@ -19,7 +19,7 @@ def resolve_path(p: str) -> str:
 def main():
     cfg = Config()
     clock = SystemClock()
-    tel = LogTelemetry()
+    tel = get_telemetry()
 
     cam = Cv2Camera(cfg.src, clock=clock)
     det = UltralyticsDetector(
