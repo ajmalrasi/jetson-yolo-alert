@@ -42,7 +42,7 @@ RateStep → ReadStep → DetectStep → TriggerFilterStep → PresenceStep → 
 | **TriggerFilterStep** | Filters detections to configured trigger classes |
 | **PresenceStep** | State machine: requires N frames + M seconds before confirming presence |
 | **AlertStep** | Rate-limited alerts — saves snapshot, writes to SQLite, sends to Telegram |
-| **TelemetryStep** | Logs metrics (FPS, presence state, etc.) |
+| **TelemetryStep** | Gauges (FPS target, presence, stride); pipeline timings are emitted earlier via `Telemetry.time_ms` (`read_ms`, `detect_ms`, `pipeline_loop_ms`, …) — see [metrics.md](metrics.md) |
 
 ### Q&A System
 
@@ -80,7 +80,8 @@ They share the same bot token but serve different purposes. The Q&A bot runs CPU
 | `alert` | GPU (nvidia) | Detection pipeline + Telegram alerts |
 | `ask-telegram` | CPU only | Telegram Q&A bot |
 | `exporter` | GPU (nvidia) | One-shot: converts .pt → .engine |
-| `preview` | GPU (nvidia) | Live video overlay (needs display) |
+| `preview` | GPU (nvidia) | Live detection overlay; optional local display, optional MJPEG browser UI (`PREVIEW_STREAM_PORT`), optional `PREVIEW_DETECTOR_ONLY` bench mode |
+| `otel-collector` | CPU (optional profile) | Receives OTLP metrics from the app; exposes Prometheus scrape for Grafana |
 
 ---
 

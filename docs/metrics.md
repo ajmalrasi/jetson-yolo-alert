@@ -1,5 +1,7 @@
 # Pipeline metrics (telemetry)
 
+Quick overview: [README.md](../README.md) (sections **Live Preview** and **Telemetry and Grafana**). This page lists metric names and OTLP/Grafana setup in detail.
+
 ## Log backend (default)
 
 Set `TELEMETRY_BACKEND=log` (or omit). Metrics are printed on the `telemetry` logger at `INFO` (override with `TELEMETRY_LOG_LEVEL`).

@@ -1,7 +1,7 @@
 # Jetson YOLOv8 TensorRT Pipeline
 
 A Dockerized pipeline for running **YOLOv8 object detection** on NVIDIA Jetson devices using **TensorRT** for optimized inference.
-Includes services for model export, live preview, alerting (Telegram notifications), and **LLM-powered natural-language Q&A** over alert history.
+Includes services for model export, **live preview** (local display and/or **browser MJPEG** from another PC), alerting (Telegram notifications), optional **pipeline telemetry** (logs or **OTLP** to Grafana), and **LLM-powered natural-language Q&A** over alert history.
 
 ---
 
@@ -69,7 +69,32 @@ All variables are configured in a single `.env` file. See `.env.example` for a c
 | `DRAW` | `1` | Enable bounding box drawing |
 | `USE_GSTREAMER` | `0` | GStreamer backend for RTSP |
 | `RTSP_LATENCY_MS` | `200` | RTSP latency buffer |
-| `CAP_PROP_BUFFERSIZE` | `2` | OpenCV capture buffer size |
+| `CAP_PROP_BUFFERSIZE` | `1` | OpenCV buffer size (lower = less lag; raise if unstable) |
+| `CAMERA_GRAB_FLUSH` | `0` | Optional: discard N queued grabs before decode (reduces lag when inference is slower than camera FPS) |
+
+**Preview (remote browser)**
+
+| Variable | Default | Description |
+|---|---|---|
+| `PREVIEW_STREAM_PORT` | *(off)* | HTTP port for MJPEG UI + stream (e.g. `8080`). Omit if using only a local display. |
+| `PREVIEW_STREAM_BIND` | `0.0.0.0` | Listen address |
+| `PREVIEW_STREAM_MAX_WIDTH` | `1280` | Max width for encoded stream (smaller = less bandwidth) |
+| `PREVIEW_STREAM_QUALITY` | `82` | JPEG quality |
+| `PREVIEW_STREAM_FPS` | `25` | Max MJPEG send rate to clients |
+| `PREVIEW_USE_DISPLAY` | auto | `0` to disable `imshow` even if `DISPLAY` is set |
+| `PREVIEW_DETECTOR_ONLY` | `0` | `1` = full-speed preview, no alert/DB/snapshots (tuning detector and tracker) |
+
+**Telemetry**
+
+| Variable | Default | Description |
+|---|---|---|
+| `TELEMETRY_BACKEND` | `log` | `log` (stdout) or `otlp` (OpenTelemetry metrics) |
+| `TELEMETRY_LOG_LEVEL` | `INFO` | Log level for the `telemetry` logger |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | *(SDK default)* | OTLP receiver URL, e.g. `http://127.0.0.1:4318` |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | Must match your collector |
+| `OTEL_SERVICE_NAME` | `jetson-yolo-alert` | `service.name` for OTLP resource |
+
+See [docs/metrics.md](docs/metrics.md) for bottleneck timings (`read_ms`, `detect_ms`, `pipeline_loop_ms`, …) and Grafana via OTLP collector.
 
 </details>
 
@@ -117,7 +142,7 @@ pip install -r requirements.txt
 * **Modular Services**:
   * **`exporter`** — Converts YOLOv8 PyTorch model to TensorRT.
   * **`jetson-yolo`** — Base container for running detection or CLI commands.
-  * **`preview`** — Live stream overlay (RTSP, USB, file).
+  * **`preview`** — Live detection overlay (same TensorRT path as `alert`): optional local window, optional **MJPEG** browser UI, optional **detector-only** bench mode (`PREVIEW_DETECTOR_ONLY=1`).
   * **`alert`** — Event-based object detection alerts with tracking & throttling.
 * **Object Tracking** — Uses BoT-SORT or ByteTrack for persistent IDs.
 * **Adaptive Framerate** — Dynamically adjusts processing FPS to save power when the scene is empty.
@@ -125,6 +150,7 @@ pip install -r requirements.txt
 * **LLM-powered Q&A** — Ask natural-language questions about alert history via Telegram `/ask` or CLI. Uses a lightweight Text-to-SQL approach (~1,500 tokens/query) with multi-provider support (Groq, OpenAI, xAI, Ollama).
 * **Async Telegram Bot** — Built with [python-telegram-bot](https://python-telegram-bot.org/) for non-blocking I/O, declarative command routing, and graceful shutdown.
 * **Configurable via `.env`** — Tune FPS, confidence thresholds, object classes, and camera backends.
+* **Telemetry** — Pipeline timings (`read_ms`, `detect_ms`, `alert_ms`, `pipeline_loop_ms`, …) via `TELEMETRY_BACKEND=log` or **`otlp`** (OpenTelemetry → collector → Grafana). See [docs/metrics.md](docs/metrics.md).
 
 ---
 
@@ -135,6 +161,8 @@ pip install -r requirements.txt
 - **app/adapters/** – Implementations of interfaces for camera input, detection (YOLO/TensorRT), tracking, alert delivery, LLM client, Telegram bot, and telemetry.
 - **app/app/** – Executable scripts for running the system, live preview, and Telegram Q&A bot.
 - **app/tools/** – Tools like exporting YOLO models to TensorRT engines, and CLI Q&A.
+- **docs/** – Extra docs (e.g. [docs/metrics.md](docs/metrics.md) telemetry and Grafana, [docs/AGENTS.md](docs/AGENTS.md) QA debugging).
+- **otel/** – Example OpenTelemetry Collector config (OTLP in, Prometheus scrape out for Grafana).
 - **tests/** – Unit and integration tests for policies, QA service, and overall behavior.
 ```
 
@@ -169,10 +197,46 @@ docker compose up -d alert ask-telegram
 
 ### 4️⃣ Live Preview (Optional)
 
-If you have a monitor connected (or X11 forwarding), you can view a live debug feed:
-```bash
-docker compose up preview
-```
+The **`preview`** service runs the same detection pipeline as **`alert`** (TensorRT + tracker), draws boxes with track IDs and on-screen FPS/stats, and can stream to a **browser** on another machine.
+
+**A. Remote viewing (recommended for headless Jetson / no HDMI)**
+
+1. In `.env` set e.g. `PREVIEW_STREAM_PORT=8080` (and ensure `DISPLAY` is not required — preview skips OpenCV windows when there is no display).
+2. Rebuild after code changes (the image embeds `app/`; preview does not bind-mount `./app`):
+
+   ```bash
+   docker compose build preview && docker compose up preview
+   ```
+
+3. On your PC, open **`http://<JETSON_IP>:8080/`** (root path). The page has **Start live preview** / **Stop**; raw MJPEG for VLC is **`http://<JETSON_IP>:8080/stream`**.
+
+**B. Tuning detector and tracker without alert side effects**
+
+Set `PREVIEW_DETECTOR_ONLY=1` for full pipeline throughput, **no** Telegram/alert DB/snapshot writes, and track-ID overlays. This does **not** stop the `alert` service — it only changes the **preview** process.
+
+**C. Local monitor (optional)**
+
+If the Jetson has a desktop and `DISPLAY` is set, you also get an OpenCV window; press `q` to quit.
+
+**D. If the stream lags**
+
+Lower capture buffering: `CAP_PROP_BUFFERSIZE=1`, optionally `CAMERA_GRAB_FLUSH=8` (see `.env.example`). For RTSP, tune `RTSP_LATENCY_MS` / `USE_GSTREAMER`.
+
+---
+
+### 5️⃣ Telemetry and Grafana (Optional)
+
+1. **Log metrics (default)** — `TELEMETRY_BACKEND=log` prints timings on the `telemetry` logger (`TELEMETRY_LOG_LEVEL=INFO`).
+
+2. **OTLP** — Set `TELEMETRY_BACKEND=otlp` and `OTEL_EXPORTER_OTLP_ENDPOINT` (e.g. `http://127.0.0.1:4318`). Rebuild the image so OpenTelemetry packages from `requirements.txt` are installed.
+
+3. **Collector + Grafana (Compose)** — Optional profile runs OpenTelemetry Collector (receives OTLP, exposes Prometheus scrape for Grafana):
+
+   ```bash
+   docker compose --profile observability up -d otel-collector grafana
+   ```
+
+   Point Grafana’s **Prometheus** datasource at `http://localhost:8889` (same host as collector when using `network_mode: host`). Details: [docs/metrics.md](docs/metrics.md).
 
 ---
 
