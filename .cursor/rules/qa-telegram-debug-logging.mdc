@@ -1,0 +1,16 @@
+---
+description: QA/Telegram debug traces — where they live and how agents should use them
+alwaysApply: true
+---
+
+# QA & Telegram `/ask` debugging
+
+**Canonical doc:** [`docs/AGENTS.md`](docs/AGENTS.md) (grep/tail, SQL time windows, `(N detections found)` vs aggregates, SQLite vs log).
+
+**Quick facts**
+
+- Log file: `{SAVE_DIR}/qa_trace.log` — logger `qa.trace`, configured in [`app/core/qa.py`](app/core/qa.py).
+- Default `SAVE_DIR`: `/workspace/work/alerts` in Docker; host often `./work/alerts` with compose bind mount.
+- No separate Telegram history DB — only this log (+ stdout). Detection data: SQLite `alert_history.db` / `ALERT_DB_PATH`.
+
+**When debugging user questions:** read `qa_trace.log`, extract SQL `ts` ranges, compare across turns; do not assume `(N detections found)` equals “N alerts” for aggregate queries.

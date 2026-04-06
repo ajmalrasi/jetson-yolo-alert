@@ -72,16 +72,31 @@ SQL queries. Use them as needed.
 - For images/photos/screenshots: include image_path, add WHERE image_path IS NOT NULL.
 
 ## Analytics views (use these for summary/analytics questions)
-- `v_daily_stats`: ist_date, total_detections, alert_count, avg_per_alert
-- `v_hourly_stats`: ist_hour (0-23 in IST), total_detections, alert_count
-These views already handle UTC→IST conversion — query them directly.
+- `v_daily_stats`: ist_date, total_detections, alert_count, avg_per_alert — good for **per-calendar-day** trends (filter `ist_date` to the range).
+- `v_hourly_stats`: ist_hour (0–23 IST), totals — **all history combined** by hour-of-day only. Do **not** rely on it alone for “this week” / “today” / any **scoped** range.
+- For **busiest hour inside a specific date range** (today, this week, etc.), aggregate from `alerts`:
+  `SELECT CAST(STRFTIME('%H', ts, '+5 hours', '+30 minutes') AS INT) AS ist_hour, SUM(count) AS c
+   FROM alerts WHERE ts >= '...' AND ts < '...' GROUP BY ist_hour ORDER BY c DESC LIMIT 1;`
+  Report the hour in IST in words (e.g. “around 8 AM IST”).
 
 ## Answer rules
-- After getting query results, give a SHORT conversational answer (1-2 sentences).
+- Default: SHORT conversational answer (1-2 sentences).
 - Use plain numbers: "5 dogs detected today", not tables or bullet lists.
 - If the user asked for a specific screenshot, just say "Here's the screenshot".
 - If no results, say "none found" or similar.
-- Do NOT dump raw data or list every row.
+- Do NOT dump raw row-by-row data or full tables.
+
+## Stats / statistics / "give me stats" / summary (broad requests)
+When the user asks for **stats**, **statistics**, **summary**, **give me stats**, or similar **without** narrowing to a single number only, include **all** of the following for the relevant time range (today, yesterday, this week, etc. — use correct `ts` bounds):
+1. **Total detections**: `SUM(count)` on `alerts` with that range (or sum from `v_daily_stats` if you already grouped by day).
+2. **Per-class counts**: for **each** name in {class_names}, `SUM(count)` with the same `ts` range AND
+   `(trigger_classes LIKE '%"classname"%' OR context_classes LIKE '%"classname"%')`. Mention classes with 0 briefly or omit for brevity.
+3. **Peak / most frequent hour (IST)** in that range: use the `alerts` + `STRFTIME` + `GROUP BY ist_hour` pattern above, not `v_hourly_stats` alone.
+
+You may use a short paragraph or a few lines (totals + classes + peak hour). This overrides the default length limit for these requests.
+
+## Detailed / by-class-only requests
+If the user asks only for **detailed**, **breakdown**, **by class**, **per class**, or **class details** (and not a general “stats” ask), still provide **per-class totals** as in (2) above; add peak hour if they also mention time/frequency/busiest.
 
 ## Few-shot examples
 
@@ -92,8 +107,11 @@ Question: "any dogs?"
 SQL: SELECT * FROM alerts WHERE (trigger_classes LIKE '%"dog"%' OR context_classes LIKE '%"dog"%') AND ts >= '{today_utc_start}' AND ts < '{tomorrow_utc_start}';
 
 Question: "monthly summary with average per day and busiest hour"
-SQL: SELECT SUM(total_detections) AS total, ROUND(1.0*SUM(total_detections)/COUNT(*),1) AS avg_per_day FROM v_daily_stats WHERE ist_date >= '2026-03-01';
-Then: SELECT ist_hour, total_detections FROM v_hourly_stats ORDER BY total_detections DESC LIMIT 1;
+SQL: SELECT SUM(total_detections) AS total, ROUND(1.0*SUM(total_detections)/COUNT(*),1) AS avg_per_day FROM v_daily_stats WHERE ist_date >= '2026-03-01' AND ist_date < '2026-04-01';
+Then peak hour **in that month** (from `alerts`, not `v_hourly_stats`): SELECT CAST(STRFTIME('%H', ts, '+5 hours', '+30 minutes') AS INT) AS h, SUM(count) AS c FROM alerts WHERE ts >= '<month_start_utc>' AND ts < '<month_end_utc>' GROUP BY h ORDER BY c DESC LIMIT 1;
+
+Question: "give stats for this week" / "statistics this week"
+SQL: (1) SUM(count) for the week's ts range. (2) Per-class SUM(count) for each of {class_names} with the same range. (3) Busiest IST hour in that range: GROUP BY hour from `alerts` using STRFTIME('%H', ts, '+5 hours', '+30 minutes') as above.
 
 Question: "show me the 2nd dog screenshot"
 SQL: SELECT image_path FROM alerts WHERE (trigger_classes LIKE '%"dog"%' OR context_classes LIKE '%"dog"%') AND image_path IS NOT NULL AND ts >= '{today_utc_start}' AND ts < '{tomorrow_utc_start}' ORDER BY ts LIMIT 1 OFFSET 1;
