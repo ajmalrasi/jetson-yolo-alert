@@ -61,18 +61,23 @@ def _annotate_bgr(
     return img
 
 
-def _has_display() -> bool:
-    try:
-        cv2.namedWindow("YOLO Preview Test")
-        cv2.destroyWindow("YOLO Preview Test")
-        return True
-    except cv2.error:
+def _use_local_window() -> bool:
+    """
+    Whether to call cv2.imshow. Never probe with cv2.namedWindow: with the Qt
+    backend, no display can abort the process instead of raising cv2.error.
+    """
+    override = os.getenv("PREVIEW_USE_DISPLAY", "").strip().lower()
+    if override in ("0", "false", "no"):
         return False
+    if override in ("1", "true", "yes"):
+        return bool(os.environ.get("DISPLAY", "").strip())
+    # auto: local window only when X11/Wayland display is advertised
+    return bool(os.environ.get("DISPLAY", "").strip())
 
 
 def main():
     stream_port = int(os.getenv("PREVIEW_STREAM_PORT", "0"))
-    use_display = _has_display()
+    use_display = _use_local_window()
     if not use_display and stream_port <= 0:
         print(
             "❌ No display: set PREVIEW_STREAM_PORT (e.g. 8080) for MJPEG, "
@@ -138,8 +143,8 @@ def main():
         )
         stream.start()
         print(
-            f"▶ MJPEG: http://<this-host>:{stream_port}/stream "
-            f"(bind {bind}:{stream_port})"
+            f"▶ Preview UI: http://<this-host>:{stream_port}/ "
+            f"(raw stream: /stream) — bind {bind}:{stream_port}"
         )
 
     if use_display:
