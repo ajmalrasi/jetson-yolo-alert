@@ -25,3 +25,11 @@ class RatePolicy:
         if state.time_since_last_present(now) < self.cooldown_sec:
             return RateTarget(max(self.base_fps, min(self.high_fps or 9999, 5)), 2)
         return RateTarget(self.base_fps, self.base_stride)
+
+
+@dataclass
+class FullSpeedRatePolicy:
+    """No RateStep throttling; stride 1 every frame. For preview benchmark / detector-only mode."""
+
+    def decide(self, state: PresenceState, now: float) -> RateTarget:
+        return RateTarget(0.0, 1)

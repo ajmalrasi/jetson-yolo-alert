@@ -23,7 +23,10 @@ class Cv2Camera(Camera):
                 self.cap = cv2.VideoCapture(self.src, cv2.CAP_FFMPEG)
                 try:
                     if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
-                        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, int(os.getenv("CAP_PROP_BUFFERSIZE", "2")))
+                        self.cap.set(
+                            cv2.CAP_PROP_BUFFERSIZE,
+                            int(os.getenv("CAP_PROP_BUFFERSIZE", "1")),
+                        )
                 except Exception:
                     pass
 
@@ -41,6 +44,14 @@ class Cv2Camera(Camera):
         else:
             # USB cam / file / numeric index
             self.cap = cv2.VideoCapture(self.src, cv2.CAP_FFMPEG)
+            try:
+                if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
+                    self.cap.set(
+                        cv2.CAP_PROP_BUFFERSIZE,
+                        int(os.getenv("CAP_PROP_BUFFERSIZE", "1")),
+                    )
+            except Exception:
+                pass
 
         if not self.cap or not self.cap.isOpened():
             raise RuntimeError(f"Failed to open camera source: {self.src}")
@@ -48,6 +59,10 @@ class Cv2Camera(Camera):
     def read(self) -> Optional[Frame]:
         if self.cap is None:
             raise RuntimeError("Camera not opened. Call open() first.")
+        # Drop queued frames so we decode ~the latest (reduces lag when inference < camera FPS).
+        flush = max(0, int(os.getenv("CAMERA_GRAB_FLUSH", "0")))
+        for _ in range(flush):
+            self.cap.grab()
         ok, img = self.cap.read()
         if not ok:
             return None

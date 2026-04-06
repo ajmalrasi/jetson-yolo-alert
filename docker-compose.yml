@@ -61,6 +61,7 @@ services:
     command: python3 -m app.app.run
 
   preview:
+    build: .
     image: jetson-yolo:local
     runtime: nvidia
     network_mode: host

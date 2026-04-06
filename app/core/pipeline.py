@@ -5,7 +5,7 @@ import os, cv2
 
 from .ports import Detection, Frame, Detector, ITracker, Camera, AlertSink, EventBus, Telemetry
 from .state import PresenceState
-from .rate_policy import RatePolicy, RateTarget
+from .rate_policy import RatePolicy, RateTarget, FullSpeedRatePolicy
 from .presence_policy import PresencePolicy
 from .alert_policy import AlertPolicy
 from .clock import Clock
@@ -271,6 +271,15 @@ class AlertStep(PipelineStep):
 
         return ctx
 
+
+@dataclass
+class NoOpAlertStep(PipelineStep):
+    """Skip alert accumulation, snapshots, Telegram, and DB (preview detector-only mode)."""
+
+    def run(self, ctx: Ctx) -> Ctx:
+        return ctx
+
+
 @dataclass
 class TelemetryStep(PipelineStep):
     telemetry: Telemetry
@@ -299,9 +308,12 @@ class Pipeline:
     telemetry: Telemetry
     event_bus: Optional[EventBus] = None
     alert_history: Optional["AlertHistoryStore"] = None
+    preview_detector_only: bool = False
 
     def __post_init__(self):
-        if self.alert_history is None:
+        if self.preview_detector_only:
+            self.alert_history = None
+        elif self.alert_history is None:
             try:
                 from .alert_history import AlertHistoryStore
 
@@ -325,26 +337,45 @@ class Pipeline:
         self._trigger_ids = _names_to_ids(self.cfg.trigger_classes, name2id)
         self._draw_ids    = _names_to_ids(self.cfg.draw_classes, name2id)
 
-        os.makedirs(self.cfg.save_dir, exist_ok=True)
+        if not self.preview_detector_only:
+            os.makedirs(self.cfg.save_dir, exist_ok=True)
 
-        # wire steps
-        self.steps: list[PipelineStep] = [
-            RateStep(clock=self.clock, rate=self.rate),
-            ReadStep(cam=self.camera, telemetry=self.telemetry),
-            DetectStep(det=self.detector, tracker=self.tracker, conf_thresh=self.cfg.conf_thresh, telemetry=self.telemetry),
-            TriggerFilterStep(trigger_ids=self._trigger_ids, telemetry=self.telemetry),
-            PresenceStep(policy=self.presence),
-            AlertStep(
-                alert=self.alerts, sink=self.sink, event_bus=self.event_bus,
-                rearm_sec=self.cfg.rearm_sec, save_dir=self.cfg.save_dir,
-                draw_ids=self._draw_ids, conf_thresh=self.cfg.conf_thresh,
+        eff_rate: RatePolicy | FullSpeedRatePolicy = (
+            FullSpeedRatePolicy() if self.preview_detector_only else self.rate
+        )
+        alert_step: PipelineStep = (
+            NoOpAlertStep()
+            if self.preview_detector_only
+            else AlertStep(
+                alert=self.alerts,
+                sink=self.sink,
+                event_bus=self.event_bus,
+                rearm_sec=self.cfg.rearm_sec,
+                save_dir=self.cfg.save_dir,
+                draw_ids=self._draw_ids,
+                conf_thresh=self.cfg.conf_thresh,
                 draw=self.cfg.draw,
                 class_names_by_id={v: k for k, v in self._name2id.items()},
                 telemetry=self.telemetry,
                 history=self.alert_history,
                 save_raw_frames=self.cfg.save_raw_frames,
                 raw_frames_dir=self.cfg.raw_frames_dir,
+            )
+        )
+
+        # wire steps
+        self.steps: list[PipelineStep] = [
+            RateStep(clock=self.clock, rate=eff_rate),
+            ReadStep(cam=self.camera, telemetry=self.telemetry),
+            DetectStep(
+                det=self.detector,
+                tracker=self.tracker,
+                conf_thresh=self.cfg.conf_thresh,
+                telemetry=self.telemetry,
             ),
+            TriggerFilterStep(trigger_ids=self._trigger_ids, telemetry=self.telemetry),
+            PresenceStep(policy=self.presence),
+            alert_step,
             TelemetryStep(telemetry=self.telemetry),
         ]
 
