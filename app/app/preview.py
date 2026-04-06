@@ -47,7 +47,11 @@ def _draw_class_ids(det, cfg: Config) -> Set[int]:
 
 
 def _annotate_bgr(
-    frame: Frame, dets: Sequence[Detection], draw_ids: Set[int], conf: float
+    frame: Frame,
+    dets: Sequence[Detection],
+    draw_ids: Set[int],
+    conf: float,
+    label_track_ids: bool = False,
 ):
     img = frame.image.copy()
     keep = [
@@ -58,6 +62,17 @@ def _annotate_bgr(
     for d in keep:
         x1, y1, x2, y2 = d.xyxy
         cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        if label_track_ids and d.track_id is not None:
+            cv2.putText(
+                img,
+                str(int(d.track_id)),
+                (x1, max(16, y1 - 4)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (0, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
     return img
 
 
@@ -86,16 +101,23 @@ def main():
         sys.exit(1)
 
     cfg = Config()
+    detector_only = os.getenv("PREVIEW_DETECTOR_ONLY", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     clock = SystemClock()
     tel = LogTelemetry()
 
     cam = Cv2Camera(cfg.src, clock=clock)
 
+    # Bench mode: process every frame in the pipeline + Ultralytics track() stride 1
+    vid_stride_eff = 1 if detector_only else cfg.vid_stride
     det = UltralyticsDetector(
         engine_path=resolve_path(cfg.engine),
         conf=cfg.conf_thresh,
         imgsz=cfg.img_size,
-        vid_stride=cfg.vid_stride,
+        vid_stride=vid_stride_eff,
         tracker_cfg=resolve_path(cfg.tracker_cfg) if cfg.tracker_on else None,
     )
 
@@ -125,6 +147,7 @@ def main():
         alerts=alerts,
         sink=NullSink(),
         telemetry=tel,
+        preview_detector_only=detector_only,
     )
 
     draw_ids = _draw_class_ids(det, cfg)
@@ -153,12 +176,23 @@ def main():
 
     if use_display:
         print("▶ Local window: press 'q' to quit.")
+    if detector_only:
+        print(
+            "▶ PREVIEW_DETECTOR_ONLY: full-speed loop, no alerts/DB/snapshots; "
+            "track IDs on boxes (cyan). docker compose alert is unchanged."
+        )
     cam.open()
     try:
         for ctx in pipe.iter_frames():
             if ctx.frame is None:
                 continue
-            vis = _annotate_bgr(ctx.frame, ctx.dets, draw_ids, cfg.conf_thresh)
+            vis = _annotate_bgr(
+                ctx.frame,
+                ctx.dets,
+                draw_ids,
+                cfg.conf_thresh,
+                label_track_ids=detector_only and cfg.tracker_on,
+            )
             if stream is not None:
                 stream.submit_frame(vis)
             if use_display:
