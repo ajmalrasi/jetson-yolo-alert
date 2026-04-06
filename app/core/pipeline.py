@@ -216,19 +216,28 @@ class AlertStep(PipelineStep):
             if ctx.frame is not None and self.draw:
                 os.makedirs(self.save_dir, exist_ok=True)
                 img_path = os.path.join(self.save_dir, f"snapshot_{int(ctx.now*1000)}.jpg")
+                t_snap = time.perf_counter()
                 try:
                     _save_snapshot(img_path, ctx.frame, ctx.dets, self.draw_ids, self.conf_thresh)
                 except Exception:
                     img_path = None
+                self.telemetry.time_ms(
+                    "alert_snapshot_ms", (time.perf_counter() - t_snap) * 1000.0
+                )
 
             if ctx.frame is not None and self.save_raw_frames:
                 os.makedirs(self.raw_frames_dir, exist_ok=True)
                 raw_path = os.path.join(self.raw_frames_dir, f"frame_{int(ctx.now*1000)}.jpg")
+                t_raw = time.perf_counter()
                 try:
                     cv2.imwrite(raw_path, ctx.frame.image)
                 except Exception:
                     pass
+                self.telemetry.time_ms(
+                    "alert_raw_frame_ms", (time.perf_counter() - t_raw) * 1000.0
+                )
 
+            t_add = time.perf_counter()
             self.alert.add(
                 ids,
                 best_conf=best,
@@ -240,15 +249,19 @@ class AlertStep(PipelineStep):
                 frame_class_names=frame_classes,
                 frame_context_class_names=frame_context_classes,
             )
+            self.telemetry.time_ms("alert_add_ms", (time.perf_counter() - t_add) * 1000.0)
 
         # if due, flush window (even if scene is now empty)
         if self.alert.due(ctx.now):
+            t_flush = time.perf_counter()
             count, best, img_path, frame_classes, context_classes = self.alert.flush(ctx.now)
+            self.telemetry.time_ms("alert_flush_ms", (time.perf_counter() - t_flush) * 1000.0)
             ctx.alert_count = count
             ctx.alert_best_conf = best
             ctx.snapshot_path = img_path
 
             if self.history:
+                t_hist = time.perf_counter()
                 try:
                     self.history.insert_alert(
                         ts=ctx.now,
@@ -261,8 +274,12 @@ class AlertStep(PipelineStep):
                 except Exception as e:
                     self.telemetry.incr("alert_history_errors")
                     self.telemetry.gauge("last_alert_history_exc", 1.0, msg=str(e))
+                self.telemetry.time_ms(
+                    "alert_history_ms", (time.perf_counter() - t_hist) * 1000.0
+                )
 
             # send
+            t_send = time.perf_counter()
             try:
                 msg = _build_alert_message(count, best, frame_classes, context_classes)
                 self.sink.send(msg, image_path=img_path)
@@ -272,16 +289,21 @@ class AlertStep(PipelineStep):
             except Exception as e:
                 self.telemetry.incr("alert_errors")
                 self.telemetry.gauge("last_alert_exc", 1.0, msg=str(e))
+            finally:
+                self.telemetry.time_ms("alert_send_ms", (time.perf_counter() - t_send) * 1000.0)
 
         # publish presence transitions as events
-        if self.event_bus and ctx.became_present:
-            from .events import PersonDetected
-            tr_ids = [d.track_id for d in ctx.trigger_dets if d.track_id is not None]
-            best = max((d.conf for d in ctx.trigger_dets), default=0.0)
-            self.event_bus.publish("presence", PersonDetected(track_ids=tr_ids, best_conf=best))
-        if self.event_bus and ctx.became_idle:
-            from .events import PersonLost
-            self.event_bus.publish("presence", PersonLost(last_seen_t=ctx.state.last_t))
+        if self.event_bus and (ctx.became_present or ctx.became_idle):
+            t_pres = time.perf_counter()
+            if ctx.became_present:
+                from .events import PersonDetected
+                tr_ids = [d.track_id for d in ctx.trigger_dets if d.track_id is not None]
+                best = max((d.conf for d in ctx.trigger_dets), default=0.0)
+                self.event_bus.publish("presence", PersonDetected(track_ids=tr_ids, best_conf=best))
+            if ctx.became_idle:
+                from .events import PersonLost
+                self.event_bus.publish("presence", PersonLost(last_seen_t=ctx.state.last_t))
+            self.telemetry.time_ms("alert_presence_ms", (time.perf_counter() - t_pres) * 1000.0)
 
         self.telemetry.time_ms("alert_ms", (time.perf_counter() - t_alert0) * 1000.0)
         return ctx

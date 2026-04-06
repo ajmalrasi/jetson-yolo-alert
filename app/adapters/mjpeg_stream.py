@@ -31,19 +31,31 @@ def _viewer_html() -> bytes:
       --muted: #8b9cb3;
       --accent: #3d9eff;
       --border: #2d3a4d;
+      /* Fluid type: comfortable on phones without tiny text */
+      --fs-body: clamp(0.95rem, 0.88rem + 0.35vw, 1.05rem);
+      --fs-title: clamp(1.15rem, 1rem + 0.65vw, 1.45rem);
+      --fs-small: clamp(0.82rem, 0.78rem + 0.25vw, 0.92rem);
+      --pad-inline: clamp(0.75rem, 3vw, 1.5rem);
     }
     * { box-sizing: border-box; }
+    html {
+      -webkit-text-size-adjust: 100%;
+      text-size-adjust: 100%;
+    }
     body {
       margin: 0;
       min-height: 100vh;
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: var(--fs-body);
+      line-height: 1.5;
       background: radial-gradient(1200px 800px at 50% -20%, #1a2840 0%, var(--bg) 55%);
       color: var(--text);
+      padding: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0) env(safe-area-inset-bottom, 0) env(safe-area-inset-left, 0);
     }
     header {
       max-width: 1200px;
       margin: 0 auto;
-      padding: 1.25rem 1.5rem 0.5rem;
+      padding: 1rem var(--pad-inline) 0.5rem;
       display: flex;
       align-items: baseline;
       justify-content: space-between;
@@ -52,33 +64,34 @@ def _viewer_html() -> bytes:
     }
     h1 {
       margin: 0;
-      font-size: 1.35rem;
+      font-size: var(--fs-title);
       font-weight: 600;
       letter-spacing: -0.02em;
+      line-height: 1.25;
     }
     .badge {
-      font-size: 0.75rem;
+      font-size: var(--fs-small);
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.06em;
       color: var(--accent);
       border: 1px solid var(--border);
       background: rgba(61, 158, 255, 0.08);
-      padding: 0.35rem 0.65rem;
+      padding: 0.4rem 0.7rem;
       border-radius: 999px;
     }
     .hint {
       max-width: 1200px;
       margin: 0 auto;
-      padding: 0 1.5rem 1rem;
-      font-size: 0.875rem;
+      padding: 0 var(--pad-inline) 1rem;
+      font-size: var(--fs-body);
       color: var(--muted);
-      line-height: 1.45;
+      line-height: 1.5;
     }
     .toolbar {
       max-width: 1200px;
       margin: 0 auto 1rem;
-      padding: 0 1rem;
+      padding: 0 var(--pad-inline);
       display: flex;
       flex-wrap: wrap;
       gap: 0.75rem;
@@ -86,14 +99,17 @@ def _viewer_html() -> bytes:
     }
     .btn {
       font: inherit;
-      font-size: 0.95rem;
+      font-size: var(--fs-body);
       font-weight: 600;
-      padding: 0.55rem 1.15rem;
-      border-radius: 8px;
+      min-height: 44px;
+      min-width: 44px;
+      padding: 0.65rem 1.25rem;
+      border-radius: 10px;
       border: 1px solid var(--border);
       background: var(--card);
       color: var(--text);
       cursor: pointer;
+      touch-action: manipulation;
     }
     .btn:hover:not(:disabled) {
       border-color: var(--accent);
@@ -111,7 +127,7 @@ def _viewer_html() -> bytes:
     .frame-wrap {
       max-width: 1200px;
       margin: 0 auto 2rem;
-      padding: 0 1rem;
+      padding: 0 var(--pad-inline);
     }
     .card {
       background: var(--card);
@@ -126,11 +142,11 @@ def _viewer_html() -> bytes:
       display: flex;
       align-items: center;
       justify-content: center;
-      min-height: 220px;
-      padding: 2rem;
+      min-height: min(50vh, 320px);
+      padding: clamp(1.25rem, 4vw, 2rem);
       text-align: center;
       color: var(--muted);
-      font-size: 0.95rem;
+      font-size: var(--fs-body);
     }
     .card img {
       display: block;
@@ -145,20 +161,31 @@ def _viewer_html() -> bytes:
     }
     footer {
       text-align: center;
-      padding: 1rem;
-      font-size: 0.8rem;
+      padding: 1.25rem var(--pad-inline) 1.5rem;
+      font-size: var(--fs-small);
       color: var(--muted);
+      line-height: 1.45;
     }
-    code { font-size: 0.9em; background: rgba(0,0,0,0.25); padding: 0.1em 0.35em; border-radius: 4px; }
+    code {
+      font-size: 0.92em;
+      background: rgba(0,0,0,0.25);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+      word-break: break-all;
+    }
     .version-strip {
       max-width: 1200px;
       margin: 0 auto;
-      padding: 0.5rem 1.5rem;
-      font-size: 0.8rem;
+      padding: 0.65rem var(--pad-inline);
+      font-size: var(--fs-small);
       color: #6a7d95;
       border-bottom: 1px solid var(--border);
+      line-height: 1.45;
     }
     .version-strip strong { color: #a8c4e8; }
+    @media (max-width: 480px) {
+      .hint code { display: inline; }
+    }
   </style>
 </head>
 <body>

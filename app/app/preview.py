@@ -14,7 +14,14 @@ from app.core.rate_policy import RatePolicy
 from app.core.alert_policy import AlertPolicy
 from app.core.pipeline import Pipeline, _names_to_ids
 from app.core.ports import Frame, Detection
-from typing import Optional, Sequence, Set, Dict, List
+from typing import Any, Optional, Sequence, Set, Dict, List, Tuple
+
+try:
+    from PIL import Image, ImageDraw, ImageFont
+
+    _PIL_OK = True
+except ImportError:
+    _PIL_OK = False
 
 from app.adapters.camera_cv2 import Cv2Camera
 from app.adapters.detector_ultra import UltralyticsDetector
@@ -67,11 +74,160 @@ def _color_bgr_for_det(d: Detection) -> tuple:
     return (int(b * 255), int(g * 255), int(r * 255))
 
 
-PANEL_W = 268
-FONT = cv2.FONT_HERSHEY_SIMPLEX
+PANEL_W = 292
+FONT = cv2.FONT_HERSHEY_DUPLEX
 TEXT = (220, 216, 208)
 TEXT_DIM = (140, 136, 130)
 ACCENT = (160, 190, 230)
+
+# Prefer a readable system sans for the stats column (PIL); bbox labels stay OpenCV.
+_PANEL_FONT_PATHS = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+)
+_panel_font_triple: Optional[Tuple[Any, Any, Any]] = None
+_panel_fonts_failed = False
+
+
+def _bgr_to_rgb(bgr: tuple) -> Tuple[int, int, int]:
+    b, g, r = bgr
+    return (int(r), int(g), int(b))
+
+
+def _load_panel_fonts() -> Optional[Tuple[Any, Any, Any]]:
+    """DejaVu/Liberation/Noto TTF for sidebar; None if unavailable."""
+    global _panel_font_triple, _panel_fonts_failed
+    if _panel_fonts_failed:
+        return None
+    if _panel_font_triple is not None:
+        return _panel_font_triple
+    if not _PIL_OK:
+        _panel_fonts_failed = True
+        return None
+    path = next((p for p in _PANEL_FONT_PATHS if os.path.isfile(p)), None)
+    if not path:
+        _panel_fonts_failed = True
+        return None
+    bold = path.replace("DejaVuSans.ttf", "DejaVuSans-Bold.ttf")
+    if not os.path.isfile(bold):
+        bold = path
+    try:
+        _panel_font_triple = (
+            ImageFont.truetype(bold, 18),
+            ImageFont.truetype(path, 15),
+            ImageFont.truetype(path, 13),
+        )
+        return _panel_font_triple
+    except OSError:
+        _panel_fonts_failed = True
+        return None
+
+
+def _stats_panel_cv2(
+    h: int,
+    fps: float,
+    keep: List[Detection],
+    class_names_by_id: Dict[int, str],
+) -> np.ndarray:
+    panel = np.zeros((h, PANEL_W, 3), dtype=np.uint8)
+    panel[:] = (42, 40, 38)
+    cv2.line(panel, (0, 0), (0, h - 1), (72, 70, 68), 1)
+
+    y = 24
+    lh = 22
+
+    def line(txt: str, color=TEXT, scale: float = 0.55, thick: int = 1) -> None:
+        nonlocal y
+        cv2.putText(panel, txt, (12, y), FONT, scale, color, thick, cv2.LINE_AA)
+        y += lh
+
+    line("Preview stats", ACCENT, 0.58, 1)
+    y += 2
+    line(f"FPS   {fps:.1f}", TEXT)
+    line(f"Objects {len(keep)}", TEXT)
+    y += 6
+    line("Track · class · conf", TEXT_DIM, 0.48, 1)
+    y += 4
+
+    rows = sorted(
+        keep,
+        key=lambda d: (d.track_id is None, d.track_id or -1, d.cls_id),
+    )
+    max_rows = max(1, (h - y - 24) // lh)
+    for d in rows[:max_rows]:
+        tid = f"{int(d.track_id)}" if d.track_id is not None else "—"
+        nm = class_names_by_id.get(d.cls_id, "?")[:14]
+        c = _color_bgr_for_det(d)
+        txt = f"{tid:>4}  {nm:14}  {d.conf:.2f}"
+        cv2.putText(panel, txt, (12, y), FONT, 0.48, c, 1, cv2.LINE_AA)
+        y += lh
+    if len(rows) > max_rows:
+        line(f"+{len(rows) - max_rows} more", TEXT_DIM, 0.45, 1)
+    return panel
+
+
+def _stats_panel_pil(
+    h: int,
+    fps: float,
+    keep: List[Detection],
+    class_names_by_id: Dict[int, str],
+) -> Optional[np.ndarray]:
+    fonts = _load_panel_fonts()
+    if fonts is None:
+        return None
+    title_f, body_f, small_f = fonts
+    bg_rgb = _bgr_to_rgb((42, 40, 38))
+    im = Image.new("RGB", (PANEL_W, h), bg_rgb)
+    draw = ImageDraw.Draw(im)
+    x = 12
+    y = 22
+    draw.text((x, y), "Preview stats", font=title_f, fill=_bgr_to_rgb(ACCENT))
+    y += 28
+    draw.text((x, y), f"FPS   {fps:.1f}", font=body_f, fill=_bgr_to_rgb(TEXT))
+    y += 22
+    draw.text((x, y), f"Objects {len(keep)}", font=body_f, fill=_bgr_to_rgb(TEXT))
+    y += 26
+    draw.text((x, y), "Track · class · conf", font=small_f, fill=_bgr_to_rgb(TEXT_DIM))
+    y += 20
+    lh = 20
+    rows = sorted(
+        keep,
+        key=lambda d: (d.track_id is None, d.track_id or -1, d.cls_id),
+    )
+    max_rows = max(1, (h - y - 22) // lh)
+    for d in rows[:max_rows]:
+        tid = f"{int(d.track_id)}" if d.track_id is not None else "—"
+        nm = class_names_by_id.get(d.cls_id, "?")[:14]
+        txt = f"{tid:>4}  {nm:14}  {d.conf:.2f}"
+        draw.text((x, y), txt, font=small_f, fill=_bgr_to_rgb(_color_bgr_for_det(d)))
+        y += lh
+    if len(rows) > max_rows:
+        draw.text(
+            (x, y),
+            f"+{len(rows) - max_rows} more",
+            font=small_f,
+            fill=_bgr_to_rgb(TEXT_DIM),
+        )
+    arr = np.asarray(im)
+    return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+
+
+def _build_stats_panel(
+    h: int,
+    fps: float,
+    keep: List[Detection],
+    class_names_by_id: Dict[int, str],
+) -> np.ndarray:
+    if _PIL_OK:
+        try:
+            pil_panel = _stats_panel_pil(h, fps, keep, class_names_by_id)
+            if pil_panel is not None:
+                cv2.line(pil_panel, (0, 0), (0, h - 1), (72, 70, 68), 1)
+                return pil_panel
+        except Exception:
+            pass
+    return _stats_panel_cv2(h, fps, keep, class_names_by_id)
 
 
 def _annotate_preview_frame(
@@ -120,65 +276,8 @@ def _annotate_preview_frame(
             cv2.LINE_AA,
         )
 
-    # FPS chip (top-left on video)
-    fps_t = f"{fps:.1f} FPS"
-    (tw, th), _ = cv2.getTextSize(fps_t, FONT, 0.75, 2)
-    pad = 10
-    cv2.rectangle(
-        img,
-        (pad, pad),
-        (pad + tw + 14, pad + th + 14),
-        (36, 34, 40),
-        -1,
-        lineType=cv2.LINE_AA,
-    )
-    cv2.putText(
-        img,
-        fps_t,
-        (pad + 7, pad + th + 4),
-        FONT,
-        0.75,
-        ACCENT,
-        2,
-        cv2.LINE_AA,
-    )
-
-    # Right sidebar
-    h, w = img.shape[:2]
-    panel = np.zeros((h, PANEL_W, 3), dtype=np.uint8)
-    panel[:] = (42, 40, 38)
-    cv2.line(panel, (0, 0), (0, h - 1), (72, 70, 68), 1)
-
-    y = 22
-    lh = 20
-
-    def line(txt, color=TEXT, scale=0.5, thick=1):
-        nonlocal y
-        cv2.putText(panel, txt, (12, y), FONT, scale, color, thick, cv2.LINE_AA)
-        y += lh
-
-    line("Preview stats", ACCENT, 0.55, 1)
-    y += 4
-    line(f"FPS   {fps:.1f}", TEXT)
-    line(f"Objects {len(keep)}", TEXT)
-    y += 8
-    line("Track · class · conf", TEXT_DIM, 0.42, 1)
-    y += 4
-
-    rows = sorted(
-        keep,
-        key=lambda d: (d.track_id is None, d.track_id or -1, d.cls_id),
-    )
-    max_rows = max(1, (h - y - 24) // lh)
-    for i, d in enumerate(rows[:max_rows]):
-        tid = f"{int(d.track_id)}" if d.track_id is not None else "—"
-        nm = class_names_by_id.get(d.cls_id, "?")[:14]
-        c = _color_bgr_for_det(d)
-        txt = f"{tid:>4}  {nm:14}  {d.conf:.2f}"
-        cv2.putText(panel, txt, (12, y), FONT, 0.42, c, 1, cv2.LINE_AA)
-        y += lh
-    if len(rows) > max_rows:
-        line(f"+{len(rows) - max_rows} more", TEXT_DIM, 0.42, 1)
+    h = img.shape[0]
+    panel = _build_stats_panel(h, fps, keep, class_names_by_id)
 
     out = np.hstack([img, panel])
     return out
