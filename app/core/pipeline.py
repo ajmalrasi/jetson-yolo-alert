@@ -73,12 +73,26 @@ def _build_alert_message(
         msg += f"\n- Context classes in image: {context}"
     return msg
 
-def _save_snapshot(path: str, frame: Frame, dets: Sequence[Detection], draw_ids: Set[int], conf: float):
+def _save_snapshot(
+    path: str,
+    frame: Frame,
+    dets: Sequence[Detection],
+    draw_ids: Set[int],
+    conf: float,
+    class_names_by_id: dict[int, str] | None = None,
+    tracker_on: bool = False,
+):
+    from .annotate import draw_detections
+
     img = frame.image.copy()
-    keep = [d for d in dets if d.conf >= conf and (d.cls_id in draw_ids if draw_ids else True)]
-    for d in keep:
-        x1, y1, x2, y2 = d.xyxy
-        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+    draw_detections(
+        img,
+        dets,
+        class_names_by_id=class_names_by_id or {},
+        draw_ids=draw_ids,
+        conf_thresh=conf,
+        tracker_on=tracker_on,
+    )
     cv2.imwrite(path, img)
 
 # ------------------------------
@@ -197,6 +211,7 @@ class AlertStep(PipelineStep):
     draw: bool
     class_names_by_id: dict[int, str]
     telemetry: Telemetry
+    tracker_on: bool = False
     history: Optional["AlertHistoryStore"] = None
     save_raw_frames: bool = False
     raw_frames_dir: str = ""
@@ -225,7 +240,11 @@ class AlertStep(PipelineStep):
                 img_path = os.path.join(self.save_dir, f"snapshot_{int(ctx.now*1000)}.jpg")
                 t_snap = time.perf_counter()
                 try:
-                    _save_snapshot(img_path, ctx.frame, ctx.dets, self.draw_ids, self.conf_thresh)
+                    _save_snapshot(
+                        img_path, ctx.frame, ctx.dets, self.draw_ids, self.conf_thresh,
+                        class_names_by_id=self.class_names_by_id,
+                        tracker_on=self.tracker_on,
+                    )
                 except Exception:
                     img_path = None
                 self.telemetry.time_ms(
@@ -446,6 +465,7 @@ class Pipeline:
                 draw=self.cfg.draw,
                 class_names_by_id={v: k for k, v in self._name2id.items()},
                 telemetry=self.telemetry,
+                tracker_on=self.cfg.tracker_on,
                 history=self.alert_history,
                 save_raw_frames=self.cfg.save_raw_frames,
                 raw_frames_dir=self.cfg.raw_frames_dir,

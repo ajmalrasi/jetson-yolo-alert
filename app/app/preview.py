@@ -14,6 +14,7 @@ from app.core.rate_policy import RatePolicy
 from app.core.alert_policy import AlertPolicy
 from app.core.pipeline import Pipeline, _names_to_ids
 from app.core.ports import Frame, Detection
+from app.core.annotate import draw_detections, color_bgr_for_det
 from typing import Any, Optional, Sequence, Set, Dict, List, Tuple
 
 try:
@@ -66,12 +67,7 @@ def _class_names_by_id(det) -> Dict[int, str]:
     return {}
 
 
-def _color_bgr_for_det(d: Detection) -> tuple:
-    """Muted, distinct BGR per track (preferred) or class."""
-    hue_seed = int(d.track_id) * 997 if d.track_id is not None else d.cls_id * 41 + 17
-    h = (hue_seed % 360) / 360.0
-    r, g, b = colorsys.hsv_to_rgb(h, 0.5, 0.88)
-    return (int(b * 255), int(g * 255), int(r * 255))
+_color_bgr_for_det = color_bgr_for_det
 
 
 PANEL_W = 370
@@ -247,34 +243,13 @@ def _annotate_preview_frame(
         if d.conf >= conf and (d.cls_id in draw_ids if draw_ids else True)
     ]
 
-    for d in keep:
-        col = _color_bgr_for_det(d)
-        x1, y1, x2, y2 = d.xyxy
-        cv2.rectangle(img, (x1, y1), (x2, y2), col, 2, lineType=cv2.LINE_AA)
-        name = class_names_by_id.get(d.cls_id, f"c{d.cls_id}")
-        label = f"{name}"
-        if tracker_on and d.track_id is not None:
-            label = f"{name} - id {int(d.track_id)}"
-        (tw, th), bl = cv2.getTextSize(label, FONT, 0.60, 1)
-        ty = max(y1 - 6, th + 6)
-        cv2.rectangle(
-            img,
-            (x1, ty - th - 8),
-            (x1 + tw + 8, ty + 4),
-            (28, 26, 24),
-            -1,
-            lineType=cv2.LINE_AA,
-        )
-        cv2.putText(
-            img,
-            label,
-            (x1 + 4, ty - 2),
-            FONT,
-            0.60,
-            col,
-            1,
-            cv2.LINE_AA,
-        )
+    draw_detections(
+        img,
+        keep,
+        class_names_by_id=class_names_by_id,
+        conf_thresh=0.0,
+        tracker_on=tracker_on,
+    )
 
     h = img.shape[0]
     panel = _build_stats_panel(h, fps, keep, class_names_by_id)
