@@ -1,6 +1,7 @@
-"""Tests for FrameStore: persistent connection, save/query cycle, cleanup."""
+"""Tests for FrameStore: persistent connection, save/query cycle, cleanup, threading."""
 import os
 import sqlite3
+import threading
 
 import numpy as np
 
@@ -136,3 +137,34 @@ def test_cleanup_removes_old_frames(tmp_path):
 
     remaining = store.count_range("1970-01-01T00:00:00", "2099-01-01T00:00:00")
     assert remaining == 1
+
+
+# ---------------------------------------------------------------------------
+# Cross-thread access (check_same_thread=False)
+# ---------------------------------------------------------------------------
+
+def test_query_from_different_thread(tmp_path):
+    """FrameStore should allow reads from a thread other than the creator."""
+    store = FrameStore(str(tmp_path / "frames"))
+    img = _dummy_image()
+
+    from datetime import datetime, timezone
+    ts = datetime(2026, 4, 14, 10, 0, 0, tzinfo=timezone.utc).timestamp()
+    store.save_frame(img, ts)
+
+    results = []
+    errors = []
+
+    def _read():
+        try:
+            records = store.query_range("2026-04-14T09:00:00", "2026-04-14T11:00:00")
+            results.extend(records)
+        except Exception as exc:
+            errors.append(exc)
+
+    t = threading.Thread(target=_read)
+    t.start()
+    t.join(timeout=5)
+
+    assert not errors, f"Cross-thread query failed: {errors[0]}"
+    assert len(results) == 1
