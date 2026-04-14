@@ -38,27 +38,32 @@ docker compose up -d alert ask-telegram
 
 ## How It Works
 
-```
-Camera --> YOLOv8/TensorRT --> Detection?
-                                  |
-                    yes: save frame at 2fps + alert pipeline
-                    no:  skip (save nothing)
-                                  |
-                          Alert pipeline:
-                          - Track objects (BoT-SORT/ByteTrack)
-                          - Confirm presence (N frames + M seconds)
-                          - Rate-limit and send Telegram alert
-                          - Write to SQLite alert DB
-                          - Save annotated snapshot
-                                  |
-                          Frame store:
-                          - JPEG to disk (work/frames/YYYY-MM-DD/HH/)
-                          - Metadata indexed in SQLite (frame_index.db)
-                                  |
-User asks /describe  -->  Load frames for time range
-                          Sample ~15 representative frames
-                          Send to cloud VLM (GPT-4o, Groq, Gemini)
-                          Return timestamped narrative
+```mermaid
+flowchart LR
+    cam["Camera\nUSB / RTSP"]
+
+    subgraph jetson [Jetson - always running]
+        yolo["YOLOv8\nTensorRT"]
+        track["Track + Confirm\npresence"]
+        alert["Telegram Alert\n+ snapshot"]
+        alertdb[("Alert DB\nSQLite")]
+        frames[("Frame Store\ndisk + SQLite")]
+    end
+
+    subgraph cloud [Cloud - on demand]
+        vlm["Vision LLM\nGPT-4o / Groq / Gemini"]
+    end
+
+    tg["Telegram"]
+
+    cam --> yolo
+    yolo -->|"detection"| track --> alert --> tg
+    alert --> alertdb
+    yolo -->|"2 fps"| frames
+    tg -->|"/describe\nlast night"| frames
+    frames -->|"~15 frames"| vlm
+    vlm -->|"narrative"| tg
+    tg -->|"/ask how\nmany people?"| alertdb
 ```
 
 ## Configuration
