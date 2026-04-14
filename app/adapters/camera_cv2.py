@@ -56,6 +56,12 @@ class Cv2Camera(Camera):
         if not self.cap or not self.cap.isOpened():
             raise RuntimeError(f"Failed to open camera source: {self.src}")
 
+    def grab(self) -> bool:
+        """Advance the camera buffer without decoding. Very cheap (~0.1ms)."""
+        if self.cap is None:
+            return False
+        return self.cap.grab()
+
     def read(self) -> Optional[Frame]:
         if self.cap is None:
             raise RuntimeError("Camera not opened. Call open() first.")

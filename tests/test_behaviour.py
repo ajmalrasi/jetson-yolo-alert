@@ -12,6 +12,9 @@ class FakeCamera(Camera):
         self.t = 0.0
         self.i = 0
     def open(self): pass
+    def grab(self):
+        self.t += 0.2
+        return True
     def read(self):
         self.t += 0.2; self.i += 1
         img = np.zeros((480, 640, 3), dtype=np.uint8)

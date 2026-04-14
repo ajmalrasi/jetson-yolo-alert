@@ -109,17 +109,24 @@ class ReadStep(PipelineStep):
     telemetry: Telemetry
 
     def run(self, ctx: Ctx) -> Ctx:
+        ctx.frame_index += 1
+
+        # Stride: on skip frames, grab() advances the buffer without decoding (~0.1ms).
+        # Only retrieve() + decode on the frame we actually need.
+        if ctx.target.vid_stride > 1 and (ctx.frame_index % ctx.target.vid_stride != 0):
+            self.cam.grab()
+            ctx.frame = None
+            ctx.dets = ()
+            return ctx
+
         t0 = time.perf_counter()
         frame = self.cam.read()
         read_ms = (time.perf_counter() - t0) * 1000.0
         self.telemetry.time_ms("read_ms", read_ms)
         if frame is None:
-            # no frame: keep timing monotonic
-            ctx.now = ctx.now
             return ctx
         ctx.frame = frame
         ctx.now = frame.t
-        ctx.frame_index += 1
         self.telemetry.incr("frames")
         return ctx
 
@@ -132,10 +139,6 @@ class DetectStep(PipelineStep):
 
     def run(self, ctx: Ctx) -> Ctx:
         if ctx.frame is None:
-            return ctx
-        # stride: skip heavy work if not the chosen frame
-        if ctx.target.vid_stride > 1 and (ctx.frame_index % ctx.target.vid_stride != 0):
-            ctx.dets = ()
             return ctx
 
         try:
