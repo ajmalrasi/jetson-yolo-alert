@@ -59,8 +59,7 @@ def main():
         engine_path=resolve_path(cfg.engine),
         conf=cfg.conf_thresh,
         imgsz=cfg.img_size,
-        vid_stride=cfg.vid_stride,
-        tracker_cfg=resolve_path(cfg.tracker_cfg),
+        tracker_cfg=resolve_path(cfg.tracker_cfg) if cfg.tracker_on else None,
     )
 
     sink = TelegramSink(cfg.tg_token, cfg.tg_chat)

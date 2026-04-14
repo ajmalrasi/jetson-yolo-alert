@@ -6,7 +6,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import cv2
@@ -63,7 +63,6 @@ class VideoUnderstandingService:
     frame_store: FrameStore
     vlm_model: str
     llm_model: str
-    class_names: Tuple[str, ...] = ()
     vlm_max_frames: int = 15
     vlm_max_width: int = 512
 
@@ -92,8 +91,10 @@ class VideoUnderstandingService:
             logger.exception("VLM call failed")
             return "Something went wrong while analyzing the frames. Please try again."
 
-        count = len(records)
-        header = f"Analyzed {count} frames from {self._utc_to_ist_label(start_utc)} to {self._utc_to_ist_label(end_utc)}:\n\n"
+        header = (
+            f"Analyzed {len(frames_for_vlm)} of {len(records)} frames "
+            f"from {self._utc_to_ist_label(start_utc)} to {self._utc_to_ist_label(end_utc)}:\n\n"
+        )
         return header + narrative
 
     def describe_recent(self, minutes: int = 5) -> str:
@@ -140,16 +141,19 @@ class VideoUnderstandingService:
         next_capture_sec = 0.0
 
         while True:
-            ok, img = cap.read()
-            if not ok:
-                break
             current_sec = frame_idx / fps if fps > 0 else 0
             if current_sec >= next_capture_sec:
+                ok, img = cap.read()
+                if not ok:
+                    break
                 ts_label = _format_video_timestamp(current_sec)
                 b64 = encode_frame_b64(img, max_width=self.vlm_max_width)
                 frames_for_vlm.append((ts_label, b64, ""))
                 next_capture_sec += interval_sec
                 if len(frames_for_vlm) >= self.vlm_max_frames:
+                    break
+            else:
+                if not cap.grab():
                     break
             frame_idx += 1
 

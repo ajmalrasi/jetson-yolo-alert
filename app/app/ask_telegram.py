@@ -25,13 +25,10 @@ def _build_video_service(cfg: Config):
         from ..core.video_understanding import VideoUnderstandingService
 
         frame_store = FrameStore(cfg.frames_dir)
-        all_classes = sorted(cfg.trigger_classes | cfg.draw_classes)
-
         service = VideoUnderstandingService(
             frame_store=frame_store,
             vlm_model=vlm,
             llm_model=cfg.llm_model,
-            class_names=tuple(all_classes),
             vlm_max_frames=cfg.vlm_max_frames,
             vlm_max_width=cfg.vlm_max_width,
         )

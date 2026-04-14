@@ -1,9 +1,12 @@
 from __future__ import annotations
+import logging
 from dataclasses import dataclass, field
-from typing import Optional, Sequence, Protocol, Iterable, Any, Set, TYPE_CHECKING
+from typing import Optional, Sequence, Protocol, Set, TYPE_CHECKING
 import os
 import time
 import cv2
+
+logger = logging.getLogger(__name__)
 
 from .ports import Detection, Frame, Detector, ITracker, Camera, AlertSink, EventBus, Telemetry
 from .state import PresenceState
@@ -327,9 +330,9 @@ class FrameCaptureStep(PipelineStep):
 
     Does nothing when idle. Stays active for cooldown_sec after the last
     detection so we capture the tail of an event.
+    Runs after TriggerFilterStep so ctx.trigger_dets is already populated.
     """
     frame_store: "FrameStore"
-    trigger_ids: Set[int]
     class_names_by_id: dict[int, str]
     active_fps: float = 2.0
     cooldown_sec: float = 10.0
@@ -340,8 +343,7 @@ class FrameCaptureStep(PipelineStep):
         if ctx.frame is None:
             return ctx
 
-        trigger_dets = [d for d in ctx.dets if d.cls_id in self.trigger_ids]
-        if trigger_dets:
+        if ctx.trigger_dets:
             self._last_detection_t = ctx.now
 
         in_active_window = (ctx.now - self._last_detection_t) < self.cooldown_sec
@@ -356,12 +358,12 @@ class FrameCaptureStep(PipelineStep):
             self.frame_store.save_frame(
                 image=ctx.frame.image,
                 ts=ctx.now,
-                detections=trigger_dets or None,
+                detections=ctx.trigger_dets or None,
                 class_names_by_id=self.class_names_by_id,
             )
             self._last_save_t = ctx.now
         except Exception:
-            pass
+            logger.warning("FrameCaptureStep: failed to save frame", exc_info=True)
 
         return ctx
 
@@ -454,7 +456,6 @@ class Pipeline:
         if self.frame_store is not None and not self.preview_detector_only:
             frame_capture_step = FrameCaptureStep(
                 frame_store=self.frame_store,
-                trigger_ids=self._trigger_ids,
                 class_names_by_id={v: k for k, v in self._name2id.items()},
                 active_fps=self.cfg.capture_active_fps,
                 cooldown_sec=self.cfg.capture_cooldown_sec,
@@ -470,11 +471,11 @@ class Pipeline:
                 conf_thresh=self.cfg.conf_thresh,
                 telemetry=self.telemetry,
             ),
+            TriggerFilterStep(trigger_ids=self._trigger_ids, telemetry=self.telemetry),
         ]
         if frame_capture_step is not None:
             steps.append(frame_capture_step)
         steps.extend([
-            TriggerFilterStep(trigger_ids=self._trigger_ids, telemetry=self.telemetry),
             PresenceStep(policy=self.presence),
             alert_step,
             TelemetryStep(telemetry=self.telemetry),

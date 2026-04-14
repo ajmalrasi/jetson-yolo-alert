@@ -34,31 +34,33 @@ class FrameStore:
         self.frames_dir = frames_dir
         os.makedirs(frames_dir, exist_ok=True)
         self.db_path = db_path or os.path.join(frames_dir, "frame_index.db")
+        self._conn: sqlite3.Connection | None = None
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=10)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+    def _get_conn(self) -> sqlite3.Connection:
+        if self._conn is None:
+            self._conn = sqlite3.connect(self.db_path, timeout=10)
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA journal_mode=WAL")
+        return self._conn
 
     def _init_db(self) -> None:
-        with self._connect() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS frames (
-                    ts TEXT NOT NULL,
-                    path TEXT NOT NULL,
-                    has_detection INTEGER NOT NULL DEFAULT 0,
-                    detection_classes TEXT NOT NULL DEFAULT '[]',
-                    detection_count INTEGER NOT NULL DEFAULT 0,
-                    best_conf REAL NOT NULL DEFAULT 0.0
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_frames_ts ON frames(ts)")
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_frames_det ON frames(has_detection, ts)"
+        conn = self._get_conn()
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS frames (
+                ts TEXT NOT NULL,
+                path TEXT NOT NULL,
+                has_detection INTEGER NOT NULL DEFAULT 0,
+                detection_classes TEXT NOT NULL DEFAULT '[]',
+                detection_count INTEGER NOT NULL DEFAULT 0,
+                best_conf REAL NOT NULL DEFAULT 0.0
             )
-            conn.commit()
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_frames_ts ON frames(ts)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_frames_det ON frames(has_detection, ts)"
+        )
+        conn.commit()
 
     def save_frame(
         self,
@@ -95,43 +97,43 @@ class FrameStore:
         has_det = 1 if det_count > 0 else 0
         classes_json = json.dumps(det_classes)
 
-        with self._connect() as conn:
-            conn.execute(
-                "INSERT INTO frames(ts, path, has_detection, detection_classes, detection_count, best_conf) "
-                "VALUES(?, ?, ?, ?, ?, ?)",
-                (ts_iso, img_path, has_det, classes_json, det_count, best_conf),
-            )
-            conn.commit()
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT INTO frames(ts, path, has_detection, detection_classes, detection_count, best_conf) "
+            "VALUES(?, ?, ?, ?, ?, ?)",
+            (ts_iso, img_path, has_det, classes_json, det_count, best_conf),
+        )
+        conn.commit()
 
         return img_path
 
     def query_range(self, start_utc: str, end_utc: str) -> List[FrameRecord]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT ts, path, has_detection, detection_classes, detection_count, best_conf "
-                "FROM frames WHERE ts >= ? AND ts < ? ORDER BY ts ASC",
-                (start_utc, end_utc),
-            ).fetchall()
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT ts, path, has_detection, detection_classes, detection_count, best_conf "
+            "FROM frames WHERE ts >= ? AND ts < ? ORDER BY ts ASC",
+            (start_utc, end_utc),
+        ).fetchall()
         return [_row_to_record(r) for r in rows]
 
     def query_with_class(
         self, start_utc: str, end_utc: str, class_name: str
     ) -> List[FrameRecord]:
         pattern = f'%"{class_name}"%'
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT ts, path, has_detection, detection_classes, detection_count, best_conf "
-                "FROM frames WHERE ts >= ? AND ts < ? AND detection_classes LIKE ? ORDER BY ts ASC",
-                (start_utc, end_utc, pattern),
-            ).fetchall()
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT ts, path, has_detection, detection_classes, detection_count, best_conf "
+            "FROM frames WHERE ts >= ? AND ts < ? AND detection_classes LIKE ? ORDER BY ts ASC",
+            (start_utc, end_utc, pattern),
+        ).fetchall()
         return [_row_to_record(r) for r in rows]
 
     def count_range(self, start_utc: str, end_utc: str) -> int:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) AS c FROM frames WHERE ts >= ? AND ts < ?",
-                (start_utc, end_utc),
-            ).fetchone()
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM frames WHERE ts >= ? AND ts < ?",
+            (start_utc, end_utc),
+        ).fetchone()
         return int(row["c"]) if row else 0
 
     def cleanup(self, max_age_days: int) -> int:
@@ -140,18 +142,18 @@ class FrameStore:
         cutoff_iso = datetime.fromtimestamp(cutoff_ts, tz=timezone.utc).strftime(_UTC_FMT)
 
         deleted = 0
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT path FROM frames WHERE ts < ?", (cutoff_iso,)
-            ).fetchall()
-            for row in rows:
-                try:
-                    os.remove(row["path"])
-                except OSError:
-                    pass
-                deleted += 1
-            conn.execute("DELETE FROM frames WHERE ts < ?", (cutoff_iso,))
-            conn.commit()
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT path FROM frames WHERE ts < ?", (cutoff_iso,)
+        ).fetchall()
+        for row in rows:
+            try:
+                os.remove(row["path"])
+            except OSError:
+                logger.debug("Could not remove frame file: %s", row["path"])
+            deleted += 1
+        conn.execute("DELETE FROM frames WHERE ts < ?", (cutoff_iso,))
+        conn.commit()
 
         self._cleanup_empty_dirs()
         logger.info("Frame cleanup: removed %d frames older than %d days", deleted, max_age_days)

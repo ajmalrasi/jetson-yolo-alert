@@ -23,7 +23,7 @@ try:
 except ImportError:
     _PIL_OK = False
 
-from app.adapters.camera_cv2 import Cv2Camera
+from app.adapters.camera_cv2 import Cv2Camera, ThreadedCamera
 from app.adapters.detector_ultra import UltralyticsDetector
 from app.adapters.telemetry_setup import get_telemetry
 from app.adapters.mjpeg_stream import MjpegStreamServer
@@ -316,15 +316,13 @@ def main():
     clock = SystemClock()
     tel = get_telemetry()
 
-    cam = Cv2Camera(cfg.src, clock=clock)
+    raw_cam = Cv2Camera(cfg.src, clock=clock)
+    cam = ThreadedCamera(raw_cam)
 
-    # Bench mode: process every frame in the pipeline + Ultralytics track() stride 1
-    vid_stride_eff = 1 if detector_only else cfg.vid_stride
     det = UltralyticsDetector(
         engine_path=resolve_path(cfg.engine),
         conf=cfg.conf_thresh,
         imgsz=cfg.img_size,
-        vid_stride=vid_stride_eff,
         tracker_cfg=resolve_path(cfg.tracker_cfg) if cfg.tracker_on else None,
     )
 
@@ -390,6 +388,8 @@ def main():
             "docker compose alert is unchanged."
         )
     cam.open()
+    if use_display:
+        cv2.namedWindow("YOLO Preview", cv2.WINDOW_NORMAL)
     fps_ema = 0.0
     last_t: Optional[float] = None
     fps_alpha = 0.12
@@ -420,7 +420,6 @@ def main():
             if stream is not None:
                 stream.submit_frame(vis)
             if use_display:
-                cv2.namedWindow("YOLO Preview", cv2.WINDOW_NORMAL)
                 cv2.imshow("YOLO Preview", vis)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break

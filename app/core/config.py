@@ -2,13 +2,6 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional, Set
 
-def _csv_to_set_int(csv: str) -> Set[int]:
-    out = set()
-    for part in csv.split(","):
-        part = part.strip()
-        if part.isdigit(): out.add(int(part))
-    return out
-
 def _csv_to_set_str(csv: str) -> Set[str]:
     return {s.strip().lower() for s in csv.split(",") if s.strip()}
 

@@ -1,8 +1,13 @@
+import logging
 import os
+import threading
+import time
 import cv2
 from typing import Optional, Tuple
 from ..core.ports import Camera, Frame
 from ..core.clock import SystemClock
+
+logger = logging.getLogger(__name__)
 
 
 class Cv2Camera(Camera):
@@ -12,6 +17,7 @@ class Cv2Camera(Camera):
         self.cap: Optional[cv2.VideoCapture] = None
         self.clock = clock or SystemClock()
         self.idx = 0
+        self._grab_flush = max(0, int(os.getenv("CAMERA_GRAB_FLUSH", "0")))
 
     def open(self) -> None:
         if isinstance(self.src, str) and self.src.startswith("rtsp://"):
@@ -28,7 +34,7 @@ class Cv2Camera(Camera):
                             int(os.getenv("CAP_PROP_BUFFERSIZE", "1")),
                         )
                 except Exception:
-                    pass
+                    logger.debug("CAP_PROP_BUFFERSIZE not supported by backend")
 
                 # Auto-fallback to GStreamer if FFmpeg failed
                 if not self.cap or not self.cap.isOpened():
@@ -51,7 +57,7 @@ class Cv2Camera(Camera):
                         int(os.getenv("CAP_PROP_BUFFERSIZE", "1")),
                     )
             except Exception:
-                pass
+                logger.debug("CAP_PROP_BUFFERSIZE not supported by backend")
 
         if not self.cap or not self.cap.isOpened():
             raise RuntimeError(f"Failed to open camera source: {self.src}")
@@ -65,9 +71,7 @@ class Cv2Camera(Camera):
     def read(self) -> Optional[Frame]:
         if self.cap is None:
             raise RuntimeError("Camera not opened. Call open() first.")
-        # Drop queued frames so we decode ~the latest (reduces lag when inference < camera FPS).
-        flush = max(0, int(os.getenv("CAMERA_GRAB_FLUSH", "0")))
-        for _ in range(flush):
+        for _ in range(self._grab_flush):
             self.cap.grab()
         ok, img = self.cap.read()
         if not ok:
@@ -108,3 +112,62 @@ class Cv2Camera(Camera):
         w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         return (h, w) if (h and w) else None
+
+
+class ThreadedCamera:
+    """Always-latest-frame wrapper for zero-lag RTSP preview.
+
+    A background thread continuously reads from the underlying camera so the
+    consumer always gets the newest frame — the RTSP/FFmpeg internal buffer
+    never builds up regardless of how long the main thread spends on inference.
+    """
+
+    def __init__(self, inner: Cv2Camera):
+        self._inner = inner
+        self._latest: Optional[Frame] = None
+        self._lock = threading.Lock()
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+
+    def open(self) -> None:
+        self._inner.open()
+        self._running = True
+        self._thread = threading.Thread(target=self._drain, daemon=True)
+        self._thread.start()
+
+    def _drain(self) -> None:
+        cap = self._inner.cap
+        clock = self._inner.clock
+        idx = 0
+        while self._running:
+            ok, img = cap.read()
+            if not ok:
+                time.sleep(0.005)
+                continue
+            idx += 1
+            h, w = img.shape[:2]
+            with self._lock:
+                self._latest = Frame(image=img, t=clock.now(), index=idx, w=w, h=h)
+
+    def grab(self) -> bool:
+        return True
+
+    def read(self) -> Optional[Frame]:
+        with self._lock:
+            frame = self._latest
+            self._latest = None
+        if frame is None:
+            time.sleep(0.005)
+        return frame
+
+    def close(self) -> None:
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+        self._inner.close()
+
+    def release(self) -> None:
+        self.close()
+
+    def shape(self) -> Optional[Tuple[int, int]]:
+        return self._inner.shape()
