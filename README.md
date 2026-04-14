@@ -6,8 +6,8 @@ Real-time object detection on NVIDIA Jetson with Telegram alerts and on-demand v
 
 - **Detects objects** (people, animals, vehicles) using YOLOv8 + TensorRT on Jetson
 - **Sends Telegram alerts** with annotated snapshots when trigger classes appear
-- **Captures frames** during detections at 2 fps, indexed in SQLite for fast retrieval
-- **Describes what happened** on demand -- ask natural language questions about any past time period and get a narrative from a cloud VLM
+- **Captures frames** during detections at 2 fps, indexed for fast retrieval
+- **Describes what happened** on demand -- ask about any past time period and get a narrative from a cloud VLM
 - **Answers alert history questions** via `/ask` (Text-to-SQL over the alert database)
 
 ## Quick Start
@@ -29,14 +29,12 @@ docker compose up -d alert ask-telegram
 
 ## Telegram Commands
 
-| Command | What it does |
-|---------|-------------|
-| `/describe last night` | VLM describes what the camera saw last night |
-| `/describe last 30 minutes` | Describes recent activity |
-| `/describe yesterday afternoon` | Any natural language time reference works |
-| Send a video file | Bot analyzes and describes the video |
-| `/ask how many people today?` | SQL-based query over alert history |
-| `/ask any dogs this week?` | Works for any alert-history question |
+- `/describe last night` -- VLM describes what the camera saw
+- `/describe last 30 minutes` -- recent activity
+- `/describe yesterday afternoon` -- any natural language time reference
+- Send a video file -- bot analyzes and describes the video
+- `/ask how many people today?` -- SQL-based alert history query
+- `/ask any dogs this week?` -- works for any alert-history question
 
 ## How It Works
 
@@ -65,53 +63,17 @@ User asks /describe  -->  Load frames for time range
 
 ## Configuration
 
-All config is via environment variables in `.env`. Key settings:
+All config is in `.env`. The essentials: `SRC` (camera), `YOLO_ENGINE`, `TRIGGER_CLASSES`, `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `LLM_MODEL` (for `/ask`), `VLM_MODEL` (for `/describe`).
 
-| Variable | Default | What |
-|----------|---------|------|
-| `SRC` | `0` | Camera source (device index, RTSP URL, or file path) |
-| `YOLO_ENGINE` | `yolov8m.engine` | TensorRT engine file |
-| `TRIGGER_CLASSES` | `person,dog,cat` | Classes that trigger alerts + frame capture |
-| `TELEGRAM_TOKEN` | -- | Telegram bot token |
-| `TELEGRAM_CHAT_ID` | -- | Chat ID for alerts |
-| `LLM_MODEL` | `none` | Text LLM for `/ask` (e.g. `groq/llama-3.3-70b-versatile`) |
-| `VLM_MODEL` | `none` | Vision LLM for `/describe` (e.g. `openai/gpt-4o-mini`) |
+Full reference: [docs/configuration.md](docs/configuration.md)
 
-See [docs/configuration.md](docs/configuration.md) for all variables.
+## Docs
 
-## Docker Compose Services
-
-| Service | Purpose | GPU |
-|---------|---------|-----|
-| `alert` | Detection pipeline + Telegram alerts + frame capture | Yes |
-| `ask-telegram` | Telegram bot (`/ask` + `/describe` + video uploads) | No |
-| `exporter` | One-shot: converts .pt to .engine | Yes |
-| `preview` | Live MJPEG stream / local display | Yes |
-
-See [docs/services.md](docs/services.md) for detailed setup and run order.
-
-## Documentation
-
-| Doc | Content |
-|-----|---------|
-| [docs/configuration.md](docs/configuration.md) | All environment variables |
-| [docs/services.md](docs/services.md) | Docker Compose services, run order, preview, telemetry |
-| [docs/DESIGN.md](docs/DESIGN.md) | Architecture, pipeline steps, design decisions |
-| [docs/metrics.md](docs/metrics.md) | Telemetry metrics and Grafana setup |
-| [docs/AGENTS.md](docs/AGENTS.md) | QA trace debugging for `/ask` |
-
-## Development
-
-```bash
-# Interactive shell
-docker compose run --rm jetson-yolo bash
-
-# Run tests
-./scripts/test_local.sh
-
-# CLI Q&A
-python -m app.tools.ask "How many people today?"
-```
+- [docs/configuration.md](docs/configuration.md) -- all environment variables
+- [docs/services.md](docs/services.md) -- Docker Compose services, setup, preview, telemetry
+- [docs/DESIGN.md](docs/DESIGN.md) -- architecture and design decisions
+- [docs/metrics.md](docs/metrics.md) -- telemetry metrics and Grafana
+- [docs/AGENTS.md](docs/AGENTS.md) -- QA trace debugging
 
 ## License
 
