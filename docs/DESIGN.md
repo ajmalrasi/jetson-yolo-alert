@@ -46,7 +46,7 @@ RateStep --> ReadStep --> DetectStep --> FrameCaptureStep --> TriggerFilterStep 
 | **FrameCaptureStep** | Saves frames at 2fps when trigger classes detected; nothing when idle; 10s cooldown |
 | **TriggerFilterStep** | Filters detections to configured trigger classes |
 | **PresenceStep** | State machine: requires N frames + M seconds before confirming presence |
-| **AlertStep** | Rate-limited alerts -- saves snapshot, writes to SQLite, sends to Telegram |
+| **AlertStep** | Rate-limited alerts -- saves annotated snapshot (shared annotation module), writes to SQLite, sends to Telegram. Cooldown enforced by both pipeline clock and wall-clock to survive restarts |
 | **TelemetryStep** | Gauges and timing metrics |
 
 ### Frame Capture and Storage
@@ -80,16 +80,24 @@ User: /describe what happened last night?
                 |
         FrameStore.query_range() loads matching frame records
                 |
-        Smart sampling: prioritize detection events, cap at ~15 frames
+        Temporal clustering (gap > 60s = new event)
+                |
+        Pick best frame per cluster (highest confidence),
+        top 5 clusters by (has_det, conf, count)
+                |
+        Build text timeline of ALL detection events
+        (even those without an image slot)
                 |
         Frames resized to 512px, base64 encoded
                 |
-        litellm.completion() sends to VLM (GPT-4o, Groq, Gemini, etc.)
+        litellm.completion() sends images + timeline to VLM
                 |
         Timestamped narrative returned to user
 ```
 
-VLM adapter (`app/adapters/vlm_litellm.py`) uses `litellm` for provider-agnostic multimodal routing. YOLO detection metadata is included as text context alongside each frame.
+VLM adapter (`app/adapters/vlm_litellm.py`) uses `litellm` for provider-agnostic multimodal routing. The system prompt is enriched with a YOLO detection timeline covering all event clusters, so the VLM has context for events beyond the sampled images.
+
+All `/describe` queries and VLM responses are logged to `{SAVE_DIR}/describe_trace.log` for debugging.
 
 ### Q&A System
 
@@ -170,9 +178,9 @@ openai/gpt-4o-mini             -->  api.openai.com/v1
 **Vision LLM** (`vlm_litellm.py`): uses `litellm.completion()` for multimodal routing:
 
 ```
-openai/gpt-4o-mini                    -->  OpenAI vision API
-groq/llama-4-scout-17b-16e-instruct   -->  Groq vision API
-gemini/gemini-2.0-flash               -->  Google Gemini API
+openai/gpt-4o-mini                                -->  OpenAI vision API
+groq/meta-llama/llama-4-scout-17b-16e-instruct    -->  Groq vision API (max 5 images)
+gemini/gemini-2.0-flash                           -->  Google Gemini API
 ```
 
 ## Key Design Decisions
@@ -201,7 +209,8 @@ app/
     video_understanding.py   -- VideoUnderstandingService (time parsing, sampling, VLM)
     state.py                 -- Presence state machine
     presence_policy.py       -- Presence confirmation rules
-    alert_policy.py          -- Alert rate-limiting and grouping
+    annotate.py              -- Shared bounding box / label drawing (preview + alert snapshots)
+    alert_policy.py          -- Alert rate-limiting and grouping (wall-clock cooldown)
     rate_policy.py           -- Adaptive FPS policy
     clock.py                 -- Time abstraction (testable)
     events.py                -- Event types

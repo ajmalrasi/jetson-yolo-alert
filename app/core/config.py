@@ -56,7 +56,7 @@ class Config:
     llm_model: str = os.getenv("LLM_MODEL", "none")
     # Video understanding (VLM)
     vlm_model: str = os.getenv("VLM_MODEL", "none")
-    vlm_max_frames: int = int(os.getenv("VLM_MAX_FRAMES", "15"))
+    vlm_max_frames: int = int(os.getenv("VLM_MAX_FRAMES", "5"))
     vlm_max_width: int = int(os.getenv("VLM_MAX_WIDTH", "512"))
     # Frame capture (for VLM)
     frames_dir: str = os.getenv("FRAMES_DIR", "/workspace/work/frames")

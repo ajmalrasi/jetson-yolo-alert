@@ -76,9 +76,10 @@ The pipeline registers a detection alert when:
 2. Confidence >= `CONF_THRESH`
 3. Object persists for at least `MIN_PERSIST_SEC` and `MIN_FRAMES`
 4. Alert is rate-limited by `RATE_WINDOW_SEC` (e.g., max 1 message per 30s)
-5. Per-object re-trigger is throttled by `REARM_SEC`
+5. Global cooldown (`ALERT_COOLDOWN_SEC`) enforced via both pipeline clock **and** wall-clock, so service restarts don't bypass it
+6. Per-object re-trigger is throttled by `REARM_SEC`
 
-When triggered: saves an annotated snapshot, writes to SQLite, sends photo + caption to Telegram.
+When triggered: saves an annotated snapshot (using the shared `annotate` module for coloured bounding boxes + labels), writes to SQLite, sends photo + caption to Telegram.
 
 ## Frame Capture (for `/describe`)
 

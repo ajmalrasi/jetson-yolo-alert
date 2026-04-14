@@ -92,7 +92,11 @@ class VideoUnderstandingService:
         if not frames_for_vlm:
             return "Could not load any frames from that time range."
 
+        timeline = self._build_event_timeline(records)
         prompt = _VLM_SYSTEM_PROMPT
+        if timeline:
+            prompt += "\n\n" + timeline
+
         try:
             narrative = describe_frames(self.vlm_model, frames_for_vlm, prompt)
         except Exception:
@@ -127,8 +131,13 @@ class VideoUnderstandingService:
         if not frames_for_vlm:
             return "Could not load frames."
 
+        timeline = self._build_event_timeline(records)
+        prompt = _VLM_SYSTEM_PROMPT
+        if timeline:
+            prompt += "\n\n" + timeline
+
         try:
-            narrative = describe_frames(self.vlm_model, frames_for_vlm, _VLM_SYSTEM_PROMPT)
+            narrative = describe_frames(self.vlm_model, frames_for_vlm, prompt)
         except Exception:
             logger.exception("VLM call failed")
             return "Something went wrong while analyzing the frames. Please try again."
@@ -267,21 +276,49 @@ class VideoUnderstandingService:
     # ------------------------------------------------------------------
 
     def _smart_sample(self, records: List[FrameRecord]) -> List[FrameRecord]:
-        """Pick up to vlm_max_frames from records, prioritizing interesting moments."""
+        """Pick up to vlm_max_frames, one per distinct event cluster.
+
+        Groups consecutive frames into temporal clusters (gap > 60s = new
+        event), picks the best frame from each cluster, and spreads the
+        image budget across the most interesting clusters.
+        """
         if len(records) <= self.vlm_max_frames:
             return records
 
-        det_records = [r for r in records if r.has_detection]
-        no_det_records = [r for r in records if not r.has_detection]
+        clusters = _cluster_by_time(records, gap_sec=60)
 
-        if len(det_records) <= self.vlm_max_frames:
-            remaining = self.vlm_max_frames - len(det_records)
-            sampled = det_records + _evenly_sample(no_det_records, remaining)
-        else:
-            sampled = _evenly_sample(det_records, self.vlm_max_frames)
+        ranked = sorted(
+            clusters,
+            key=lambda c: (c["has_det"], c["best_conf"], c["count"]),
+            reverse=True,
+        )
 
+        chosen = ranked[: self.vlm_max_frames]
+        sampled = [c["best_frame"] for c in chosen]
         sampled.sort(key=lambda r: r.ts)
         return sampled
+
+    def _build_event_timeline(self, records: List[FrameRecord]) -> str:
+        """Build a text summary of all detection events for VLM context.
+
+        This lets the VLM know about events it doesn't have images for.
+        """
+        clusters = _cluster_by_time(records, gap_sec=60)
+        det_clusters = [c for c in clusters if c["has_det"]]
+        if not det_clusters:
+            return ""
+
+        lines = ["YOLO detection timeline (all events, not just shown images):"]
+        for c in det_clusters:
+            ts_label = self._utc_to_ist_label(c["best_frame"].ts)
+            classes = ", ".join(c["classes"])
+            dur = ""
+            if c["count"] > 1:
+                dur = f", {c['count']} frames over ~{c['duration_sec']:.0f}s"
+            lines.append(
+                f"- {ts_label}: {classes} (best conf {c['best_conf']:.2f}{dur})"
+            )
+        return "\n".join(lines)
 
     def _load_and_encode(
         self, records: List[FrameRecord]
@@ -337,6 +374,70 @@ def _evenly_sample(items: list, n: int) -> list:
         return list(items)
     step = len(items) / n
     return [items[int(i * step)] for i in range(n)]
+
+
+def _cluster_by_time(
+    records: List[FrameRecord], gap_sec: float = 60,
+) -> List[dict]:
+    """Group consecutive frames into event clusters separated by >gap_sec.
+
+    Each cluster dict has:
+        frames, count, has_det, best_conf, best_frame, classes, duration_sec
+    """
+    if not records:
+        return []
+
+    def _parse_ts(ts_str: str) -> float:
+        try:
+            return datetime.fromisoformat(ts_str).replace(tzinfo=UTC).timestamp()
+        except (ValueError, TypeError):
+            return 0.0
+
+    clusters: List[dict] = []
+    cur: List[FrameRecord] = [records[0]]
+    prev_t = _parse_ts(records[0].ts)
+
+    for rec in records[1:]:
+        t = _parse_ts(rec.ts)
+        if (t - prev_t) > gap_sec:
+            clusters.append(_build_cluster(cur))
+            cur = []
+        cur.append(rec)
+        prev_t = t
+
+    if cur:
+        clusters.append(_build_cluster(cur))
+    return clusters
+
+
+def _build_cluster(frames: List[FrameRecord]) -> dict:
+    det_frames = [f for f in frames if f.has_detection]
+    best = max(det_frames, key=lambda f: f.best_conf) if det_frames else frames[len(frames) // 2]
+    all_classes: set[str] = set()
+    best_conf = 0.0
+    for f in frames:
+        all_classes.update(f.detection_classes)
+        if f.best_conf > best_conf:
+            best_conf = f.best_conf
+
+    def _ts_float(ts_str: str) -> float:
+        try:
+            return datetime.fromisoformat(ts_str).replace(tzinfo=UTC).timestamp()
+        except (ValueError, TypeError):
+            return 0.0
+
+    t0 = _ts_float(frames[0].ts)
+    t1 = _ts_float(frames[-1].ts)
+
+    return {
+        "frames": frames,
+        "count": len(frames),
+        "has_det": bool(det_frames),
+        "best_conf": best_conf,
+        "best_frame": best,
+        "classes": sorted(all_classes) if all_classes else ["idle"],
+        "duration_sec": t1 - t0,
+    }
 
 
 def _format_video_timestamp(seconds: float) -> str:

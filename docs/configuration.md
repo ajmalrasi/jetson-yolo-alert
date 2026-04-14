@@ -27,7 +27,7 @@ All variables are set in `.env` (loaded by Docker Compose). See `.env.example` f
 | `MIN_PERSIST_SEC` | `1.0` | Seconds before registering presence |
 | `REARM_SEC` | `20` | Re-trigger cooldown per tracked object |
 | `RATE_WINDOW_SEC` | `30` | Min time between Telegram alerts |
-| `ALERT_COOLDOWN_SEC` | `150` | Min seconds between any two alerts (0 = use RATE_WINDOW_SEC only) |
+| `ALERT_COOLDOWN_SEC` | `150` | Min seconds between any two alerts; enforced via both pipeline clock and wall-clock so restarts don't bypass it (0 = use RATE_WINDOW_SEC only) |
 | `TRACKER` | `botsort.yaml` | Tracker config (botsort.yaml or bytetrack.yaml) |
 | `TRACKER_ON` | `1` | Enable object tracking |
 
@@ -84,17 +84,17 @@ Supported `LLM_MODEL` values:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `VLM_MODEL` | `none` | Vision-Language Model for `/describe` |
-| `VLM_MAX_FRAMES` | `15` | Max frames per VLM call |
+| `VLM_MAX_FRAMES` | `5` | Max frames per VLM call (Groq limits to 5; OpenAI/Gemini support more) |
 | `VLM_MAX_WIDTH` | `512` | Resize width for VLM frames (saves tokens) |
 
 Supported `VLM_MODEL` values:
 
-| Provider | Model string | Key needed |
-|----------|-------------|------------|
-| OpenAI | `openai/gpt-4o-mini` | `OPENAI_API_KEY` |
-| OpenAI (better) | `openai/gpt-4o` | `OPENAI_API_KEY` |
-| Groq | `groq/llama-4-scout-17b-16e-instruct` | `GROQ_API_KEY` |
-| Gemini | `gemini/gemini-2.0-flash` | `GEMINI_API_KEY` |
+| Provider | Model string | Key needed | Notes |
+|----------|-------------|------------|-------|
+| Groq (free tier) | `groq/meta-llama/llama-4-scout-17b-16e-instruct` | `GROQ_API_KEY` | Max 5 images/request |
+| OpenAI | `openai/gpt-4o-mini` | `OPENAI_API_KEY` | |
+| OpenAI (better) | `openai/gpt-4o` | `OPENAI_API_KEY` | |
+| Gemini | `gemini/gemini-2.0-flash` | `GEMINI_API_KEY` | |
 
 ## Frame Capture (for `/describe`)
 
@@ -106,6 +106,15 @@ Supported `VLM_MODEL` values:
 | `CAPTURE_COOLDOWN_SEC` | `10` | Seconds to keep saving after last detection |
 
 Frames are only saved when YOLO detects trigger classes. Zero disk usage when idle.
+
+## Logging / Trace Files
+
+| File | Logger | Purpose |
+|------|--------|---------|
+| `{SAVE_DIR}/qa_trace.log` | `qa.trace` | Every `/ask` question, SQL, and answer |
+| `{SAVE_DIR}/describe_trace.log` | `describe.trace` | Every `/describe` query, time range, sampled frame count, VLM model, and full narrative |
+
+Both are append-only and created automatically. Useful for debugging unexpected answers.
 
 ## Preview (MJPEG Stream)
 

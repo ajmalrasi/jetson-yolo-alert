@@ -61,7 +61,7 @@ flowchart LR
     alert --> alertdb
     yolo -->|"2 fps"| frames
     tg -->|"/describe\nlast night"| frames
-    frames -->|"~15 frames"| vlm
+    frames -->|"best ~5 frames\n+ event timeline"| vlm
     vlm -->|"narrative"| tg
     tg -->|"/ask how\nmany people?"| alertdb
 
