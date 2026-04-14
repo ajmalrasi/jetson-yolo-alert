@@ -16,6 +16,14 @@ from .frame_store import FrameRecord, FrameStore
 
 logger = logging.getLogger(__name__)
 
+_describe_trace = logging.getLogger("describe.trace")
+_describe_trace.setLevel(logging.DEBUG)
+_trace_dir = os.getenv("SAVE_DIR", "/workspace/work/alerts")
+os.makedirs(_trace_dir, exist_ok=True)
+_trace_fh = logging.FileHandler(os.path.join(_trace_dir, "describe_trace.log"))
+_trace_fh.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+_describe_trace.addHandler(_trace_fh)
+
 IST = ZoneInfo("Asia/Kolkata")
 UTC = ZoneInfo("UTC")
 
@@ -95,7 +103,13 @@ class VideoUnderstandingService:
             f"Analyzed {len(frames_for_vlm)} of {len(records)} frames "
             f"from {self._utc_to_ist_label(start_utc)} to {self._utc_to_ist_label(end_utc)}:\n\n"
         )
-        return header + narrative
+        result = header + narrative
+        _describe_trace.debug(
+            "Q: %s | range: %s to %s | frames: %d/%d | vlm: %s | Answer: %s",
+            question, start_utc, end_utc, len(frames_for_vlm), len(records),
+            self.vlm_model, narrative.replace("\n", " "),
+        )
+        return result
 
     def describe_recent(self, minutes: int = 5) -> str:
         """Describe the last N minutes of captured frames."""
@@ -119,7 +133,13 @@ class VideoUnderstandingService:
             logger.exception("VLM call failed")
             return "Something went wrong while analyzing the frames. Please try again."
 
-        return f"Last {minutes} minutes ({len(records)} frames):\n\n{narrative}"
+        result = f"Last {minutes} minutes ({len(records)} frames):\n\n{narrative}"
+        _describe_trace.debug(
+            "Q: [recent %dm] | frames: %d/%d | vlm: %s | Answer: %s",
+            minutes, len(frames_for_vlm), len(records),
+            self.vlm_model, narrative.replace("\n", " "),
+        )
+        return result
 
     def describe_video(self, video_path: str) -> str:
         """Describe an uploaded video file."""
@@ -169,7 +189,13 @@ class VideoUnderstandingService:
             logger.exception("VLM call failed for video %s", video_path)
             return "Something went wrong while analyzing the video. Please try again."
 
-        return f"Video analysis ({dur_label}, {len(frames_for_vlm)} frames sampled):\n\n{narrative}"
+        result = f"Video analysis ({dur_label}, {len(frames_for_vlm)} frames sampled):\n\n{narrative}"
+        _describe_trace.debug(
+            "Q: [video %s] | duration: %s | frames: %d | vlm: %s | Answer: %s",
+            video_path, dur_label, len(frames_for_vlm),
+            self.vlm_model, narrative.replace("\n", " "),
+        )
+        return result
 
     # ------------------------------------------------------------------
     # Time-range parsing
