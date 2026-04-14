@@ -40,21 +40,21 @@ docker compose up -d alert ask-telegram
 
 ```mermaid
 flowchart LR
-    cam["Camera\nUSB / RTSP"]
+    cam["📷 Camera\nUSB / RTSP"]:::input
 
-    subgraph jetson [Jetson - always running]
-        yolo["YOLOv8\nTensorRT"]
-        track["Track + Confirm\npresence"]
-        alert["Telegram Alert\n+ snapshot"]
-        alertdb[("Alert DB\nSQLite")]
-        frames[("Frame Store\ndisk + SQLite")]
+    subgraph jetson [🟢 Jetson - always running]
+        yolo["🧠 YOLOv8\nTensorRT"]:::detect
+        track["🔍 Track + Confirm\npresence"]:::detect
+        alert["🔔 Telegram Alert\n+ snapshot"]:::alertNode
+        alertdb[("📊 Alert DB\nSQLite")]:::store
+        frames[("🗂️ Frame Store\ndisk + SQLite")]:::store
     end
 
-    subgraph cloud [Cloud - on demand]
-        vlm["Vision LLM\nGPT-4o / Groq / Gemini"]
+    subgraph cloud [☁️ Cloud - on demand]
+        vlm["✨ Vision LLM\nGPT-4o / Groq / Gemini"]:::vlmNode
     end
 
-    tg["Telegram"]
+    tg["💬 Telegram"]:::tgNode
 
     cam --> yolo
     yolo -->|"detection"| track --> alert --> tg
@@ -64,6 +64,13 @@ flowchart LR
     frames -->|"~15 frames"| vlm
     vlm -->|"narrative"| tg
     tg -->|"/ask how\nmany people?"| alertdb
+
+    classDef input fill:#4a9eff,stroke:#2d7dd2,color:#fff
+    classDef detect fill:#34d399,stroke:#059669,color:#fff
+    classDef alertNode fill:#fb923c,stroke:#ea580c,color:#fff
+    classDef store fill:#a78bfa,stroke:#7c3aed,color:#fff
+    classDef vlmNode fill:#f472b6,stroke:#db2777,color:#fff
+    classDef tgNode fill:#38bdf8,stroke:#0284c7,color:#fff
 ```
 
 ## Configuration
