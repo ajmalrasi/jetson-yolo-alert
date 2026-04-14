@@ -74,7 +74,7 @@ def _color_bgr_for_det(d: Detection) -> tuple:
     return (int(b * 255), int(g * 255), int(r * 255))
 
 
-PANEL_W = 292
+PANEL_W = 370
 FONT = cv2.FONT_HERSHEY_DUPLEX
 TEXT = (220, 216, 208)
 TEXT_DIM = (140, 136, 130)
@@ -114,9 +114,9 @@ def _load_panel_fonts() -> Optional[Tuple[Any, Any, Any]]:
         bold = path
     try:
         _panel_font_triple = (
-            ImageFont.truetype(bold, 18),
-            ImageFont.truetype(path, 15),
-            ImageFont.truetype(path, 13),
+            ImageFont.truetype(bold, 24),
+            ImageFont.truetype(path, 20),
+            ImageFont.truetype(path, 18),
         )
         return _panel_font_triple
     except OSError:
@@ -134,36 +134,36 @@ def _stats_panel_cv2(
     panel[:] = (42, 40, 38)
     cv2.line(panel, (0, 0), (0, h - 1), (72, 70, 68), 1)
 
-    y = 24
-    lh = 22
+    y = 28
+    lh = 26
 
-    def line(txt: str, color=TEXT, scale: float = 0.55, thick: int = 1) -> None:
+    def line(txt: str, color=TEXT, scale: float = 0.65, thick: int = 1) -> None:
         nonlocal y
-        cv2.putText(panel, txt, (12, y), FONT, scale, color, thick, cv2.LINE_AA)
+        cv2.putText(panel, txt, (14, y), FONT, scale, color, thick, cv2.LINE_AA)
         y += lh
 
-    line("Preview stats", ACCENT, 0.58, 1)
-    y += 2
+    line("Preview stats", ACCENT, 0.70, 1)
+    y += 4
     line(f"FPS   {fps:.1f}", TEXT)
     line(f"Objects {len(keep)}", TEXT)
-    y += 6
-    line("Track · class · conf", TEXT_DIM, 0.48, 1)
+    y += 8
+    line("Track · class · conf", TEXT_DIM, 0.55, 1)
     y += 4
 
     rows = sorted(
         keep,
         key=lambda d: (d.track_id is None, d.track_id or -1, d.cls_id),
     )
-    max_rows = max(1, (h - y - 24) // lh)
+    max_rows = max(1, (h - y - 28) // lh)
     for d in rows[:max_rows]:
         tid = f"{int(d.track_id)}" if d.track_id is not None else "—"
         nm = class_names_by_id.get(d.cls_id, "?")[:14]
         c = _color_bgr_for_det(d)
         txt = f"{tid:>4}  {nm:14}  {d.conf:.2f}"
-        cv2.putText(panel, txt, (12, y), FONT, 0.48, c, 1, cv2.LINE_AA)
+        cv2.putText(panel, txt, (14, y), FONT, 0.62, c, 1, cv2.LINE_AA)
         y += lh
     if len(rows) > max_rows:
-        line(f"+{len(rows) - max_rows} more", TEXT_DIM, 0.45, 1)
+        line(f"+{len(rows) - max_rows} more", TEXT_DIM, 0.52, 1)
     return panel
 
 
@@ -180,22 +180,22 @@ def _stats_panel_pil(
     bg_rgb = _bgr_to_rgb((42, 40, 38))
     im = Image.new("RGB", (PANEL_W, h), bg_rgb)
     draw = ImageDraw.Draw(im)
-    x = 12
+    x = 14
     y = 22
     draw.text((x, y), "Preview stats", font=title_f, fill=_bgr_to_rgb(ACCENT))
-    y += 28
+    y += 34
     draw.text((x, y), f"FPS   {fps:.1f}", font=body_f, fill=_bgr_to_rgb(TEXT))
-    y += 22
-    draw.text((x, y), f"Objects {len(keep)}", font=body_f, fill=_bgr_to_rgb(TEXT))
     y += 26
+    draw.text((x, y), f"Objects {len(keep)}", font=body_f, fill=_bgr_to_rgb(TEXT))
+    y += 30
     draw.text((x, y), "Track · class · conf", font=small_f, fill=_bgr_to_rgb(TEXT_DIM))
-    y += 20
-    lh = 20
+    y += 28
+    lh = 28
     rows = sorted(
         keep,
         key=lambda d: (d.track_id is None, d.track_id or -1, d.cls_id),
     )
-    max_rows = max(1, (h - y - 22) // lh)
+    max_rows = max(1, (h - y - 26) // lh)
     for d in rows[:max_rows]:
         tid = f"{int(d.track_id)}" if d.track_id is not None else "—"
         nm = class_names_by_id.get(d.cls_id, "?")[:14]
@@ -254,13 +254,13 @@ def _annotate_preview_frame(
         name = class_names_by_id.get(d.cls_id, f"c{d.cls_id}")
         label = f"{name}"
         if tracker_on and d.track_id is not None:
-            label = f"{name} · id {int(d.track_id)}"
-        (tw, th), bl = cv2.getTextSize(label, FONT, 0.45, 1)
-        ty = max(y1 - 4, th + 4)
+            label = f"{name} - id {int(d.track_id)}"
+        (tw, th), bl = cv2.getTextSize(label, FONT, 0.60, 1)
+        ty = max(y1 - 6, th + 6)
         cv2.rectangle(
             img,
-            (x1, ty - th - 6),
-            (x1 + tw + 6, ty + 2),
+            (x1, ty - th - 8),
+            (x1 + tw + 8, ty + 4),
             (28, 26, 24),
             -1,
             lineType=cv2.LINE_AA,
@@ -268,9 +268,9 @@ def _annotate_preview_frame(
         cv2.putText(
             img,
             label,
-            (x1 + 3, ty - 2),
+            (x1 + 4, ty - 2),
             FONT,
-            0.45,
+            0.60,
             col,
             1,
             cv2.LINE_AA,
