@@ -141,9 +141,11 @@ pip install -r requirements.txt
 * **Optimized Inference** — YOLOv8 → TensorRT FP16 engine for NVIDIA Jetson (Orin, Xavier, Nano, etc.).
 * **Modular Services**:
   * **`exporter`** — Converts YOLOv8 PyTorch model to TensorRT.
-  * **`jetson-yolo`** — Base container for running detection or CLI commands.
+  * **`jetson-yolo`** — Base image / interactive shell; Compose starts it automatically as a dependency of **`alert`**.
   * **`preview`** — Live detection overlay (same TensorRT path as `alert`): optional local window, optional **MJPEG** browser UI, optional **detector-only** bench mode (`PREVIEW_DETECTOR_ONLY=1`).
   * **`alert`** — Event-based object detection alerts with tracking & throttling.
+  * **`ask-telegram`** — Telegram `/ask` bot over alert history (CPU-only container; no NVIDIA runtime).
+  * **`otel-collector`** / **`grafana`** — Optional metrics stack (Compose **profile** `observability`).
 * **Object Tracking** — Uses BoT-SORT or ByteTrack for persistent IDs.
 * **Adaptive Framerate** — Dynamically adjusts processing FPS to save power when the scene is empty.
 * **Telegram Notifications** — Sends text + snapshot images exactly at the moment of detection.
@@ -170,6 +172,42 @@ pip install -r requirements.txt
 
 ## 🐳 Running the Pipeline
 
+### All Compose services
+
+| Service | Purpose | GPU | Default stack |
+|--------|---------|-----|----------------|
+| **`jetson-yolo`** | Base image; interactive shell (`bash`). Started automatically by **`alert`** via `depends_on`. | Yes | Pulled in when you run `alert` |
+| **`exporter`** | One-shot TensorRT export (`python3 -m app.tools.export_engine`). | Yes | Manual (`docker compose run --rm exporter`) |
+| **`alert`** | Main detector + Telegram alerts (`python3 -m app.app.run`). | Yes | Yes |
+| **`ask-telegram`** | Telegram Q&A (`python3 -m app.app.ask_telegram`). | No | Recommended with `alert` |
+| **`preview`** | Live overlay / MJPEG (`python3 -m app.app.preview`). | Yes | Optional (often foreground) |
+| **`otel-collector`** | Receives OTLP; Prometheus scrape for Grafana. | No | Optional; profile **`observability`** |
+| **`grafana`** | Dashboards. | No | Optional; profile **`observability`** |
+
+Services in the **`observability`** profile are omitted from plain `docker compose up` unless you pass `--profile observability`.
+
+### Recommended order
+
+Do these steps in order the first time you deploy; later you only need restarts or selective commands.
+
+1. **Build the image** — required before any other service.
+2. **Export the TensorRT engine** — required once per model/device (or when you change `YOLO_MODEL` / JetPack).
+3. **If you use OTLP metrics** — set `TELEMETRY_BACKEND=otlp` and `OTEL_EXPORTER_OTLP_ENDPOINT` in `.env`, then start the collector (and Grafana if you use it) *before* or *with* the pipeline so metrics have somewhere to go:
+   ```bash
+   docker compose --profile observability up -d otel-collector grafana
+   ```
+4. **Run the pipeline** — detection + alerts, and usually the Q&A bot:
+   ```bash
+   docker compose up -d alert ask-telegram
+   ```
+   Compose starts **`jetson-yolo`** first because **`alert`** lists `depends_on: jetson-yolo`. Alerts-only (no `/ask` bot):
+   ```bash
+   docker compose up -d alert
+   ```
+5. **Preview (optional)** — tune the camera or stream MJPEG; see **Live Preview (Optional)** below. Only one of **`alert`** and **`preview`** should own the same camera/GPU-heavy path unless you deliberately run **`preview`** with `PREVIEW_DETECTOR_ONLY=1` while **`alert`** is up.
+
+The subsections **1️⃣–5️⃣** below follow **topic** order (build, export, run, preview, telemetry), not always runtime order. If you use OTLP, apply **step 3** above and read **5️⃣ Telemetry and Grafana** before starting **`alert`**.
+
 ### 1️⃣ Build the Docker image
 
 ```bash
@@ -190,7 +228,7 @@ Run the system in the background:
 docker compose up -d alert
 ```
 
-Run detection + Telegram Q&A bot together:
+Run detection + Telegram Q&A bot together (recommended):
 ```bash
 docker compose up -d alert ask-telegram
 ```
