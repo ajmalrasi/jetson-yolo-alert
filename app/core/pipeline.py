@@ -15,6 +15,7 @@ from .config import Config
 
 if TYPE_CHECKING:
     from .alert_history import AlertHistoryStore
+    from .frame_store import FrameStore
 
 # ------------------------------
 # Context passed through steps
@@ -318,6 +319,51 @@ class NoOpAlertStep(PipelineStep):
 
 
 @dataclass
+class FrameCaptureStep(PipelineStep):
+    """Save frames to disk at active_fps when detections are present.
+
+    Does nothing when idle. Stays active for cooldown_sec after the last
+    detection so we capture the tail of an event.
+    """
+    frame_store: "FrameStore"
+    trigger_ids: Set[int]
+    class_names_by_id: dict[int, str]
+    active_fps: float = 2.0
+    cooldown_sec: float = 10.0
+    _last_detection_t: float = field(default=0.0, init=False, repr=False)
+    _last_save_t: float = field(default=0.0, init=False, repr=False)
+
+    def run(self, ctx: Ctx) -> Ctx:
+        if ctx.frame is None:
+            return ctx
+
+        trigger_dets = [d for d in ctx.dets if d.cls_id in self.trigger_ids]
+        if trigger_dets:
+            self._last_detection_t = ctx.now
+
+        in_active_window = (ctx.now - self._last_detection_t) < self.cooldown_sec
+        if not in_active_window:
+            return ctx
+
+        min_interval = 1.0 / self.active_fps if self.active_fps > 0 else 0.5
+        if (ctx.now - self._last_save_t) < min_interval:
+            return ctx
+
+        try:
+            self.frame_store.save_frame(
+                image=ctx.frame.image,
+                ts=ctx.now,
+                detections=trigger_dets or None,
+                class_names_by_id=self.class_names_by_id,
+            )
+            self._last_save_t = ctx.now
+        except Exception:
+            pass
+
+        return ctx
+
+
+@dataclass
 class TelemetryStep(PipelineStep):
     telemetry: Telemetry
 
@@ -345,6 +391,7 @@ class Pipeline:
     telemetry: Telemetry
     event_bus: Optional[EventBus] = None
     alert_history: Optional["AlertHistoryStore"] = None
+    frame_store: Optional["FrameStore"] = None
     preview_detector_only: bool = False
 
     def __post_init__(self):
@@ -400,8 +447,18 @@ class Pipeline:
             )
         )
 
+        frame_capture_step: Optional[PipelineStep] = None
+        if self.frame_store is not None and not self.preview_detector_only:
+            frame_capture_step = FrameCaptureStep(
+                frame_store=self.frame_store,
+                trigger_ids=self._trigger_ids,
+                class_names_by_id={v: k for k, v in self._name2id.items()},
+                active_fps=self.cfg.capture_active_fps,
+                cooldown_sec=self.cfg.capture_cooldown_sec,
+            )
+
         # wire steps
-        self.steps: list[PipelineStep] = [
+        steps: list[PipelineStep] = [
             RateStep(clock=self.clock, rate=eff_rate, telemetry=self.telemetry),
             ReadStep(cam=self.camera, telemetry=self.telemetry),
             DetectStep(
@@ -410,11 +467,16 @@ class Pipeline:
                 conf_thresh=self.cfg.conf_thresh,
                 telemetry=self.telemetry,
             ),
+        ]
+        if frame_capture_step is not None:
+            steps.append(frame_capture_step)
+        steps.extend([
             TriggerFilterStep(trigger_ids=self._trigger_ids, telemetry=self.telemetry),
             PresenceStep(policy=self.presence),
             alert_step,
             TelemetryStep(telemetry=self.telemetry),
-        ]
+        ])
+        self.steps = steps
 
     def iter_frames(self):
         """Yield context after each full pipeline pass (for preview / tooling)."""
