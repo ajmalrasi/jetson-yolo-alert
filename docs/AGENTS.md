@@ -44,13 +44,25 @@ Errors: `logger.exception` in `answer_question`.
 2. **`(N detections found)`** — `N` is **rows returned** by SQLite (capped by `MAX_RESULT_ROWS` in `qa.py`). For **`SELECT COUNT(*)`** you get **one result row**; the prefix may say `(1 detections found)` while the **`COUNT(*)`** column is the real total. Read the aggregate value, not only the prefix.
 3. **`class_names` / LIKE filters** — dog vs person counts can differ when one question is time-bounded and another is “whole day”.
 
+## `/describe` trace log
+
+The VLM video understanding feature has its own trace log:
+
+| Item | Value |
+|------|--------|
+| **Logger** | `describe.trace` (`logging.getLogger("describe.trace")`) |
+| **File** | `{SAVE_DIR}/describe_trace.log` |
+
+Each `/describe` query logs: the user query, parsed time range (UTC), number of frames queried/sampled, VLM model used, and the full narrative response. Created at import time in `app/core/video_understanding.py`.
+
 ## Code entrypoints
 
 | Concern | File |
 |--------|------|
 | QA: SQL, execute, answer, trace | `app/core/qa.py` |
 | DB + LLM wiring | `app/core/qa_factory.py` |
-| Telegram `/ask` | `app/adapters/chat_telegram_bot.py` |
+| VLM: time parsing, sampling, describe trace | `app/core/video_understanding.py` |
+| Telegram `/ask` + `/describe` | `app/adapters/chat_telegram_bot.py` |
 
 ## Cursor
 

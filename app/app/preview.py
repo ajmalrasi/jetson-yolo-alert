@@ -14,6 +14,7 @@ from app.core.rate_policy import RatePolicy
 from app.core.alert_policy import AlertPolicy
 from app.core.pipeline import Pipeline, _names_to_ids
 from app.core.ports import Frame, Detection
+from app.core.annotate import draw_detections, color_bgr_for_det
 from typing import Any, Optional, Sequence, Set, Dict, List, Tuple
 
 try:
@@ -23,7 +24,7 @@ try:
 except ImportError:
     _PIL_OK = False
 
-from app.adapters.camera_cv2 import Cv2Camera
+from app.adapters.camera_cv2 import Cv2Camera, ThreadedCamera
 from app.adapters.detector_ultra import UltralyticsDetector
 from app.adapters.telemetry_setup import get_telemetry
 from app.adapters.mjpeg_stream import MjpegStreamServer
@@ -66,15 +67,10 @@ def _class_names_by_id(det) -> Dict[int, str]:
     return {}
 
 
-def _color_bgr_for_det(d: Detection) -> tuple:
-    """Muted, distinct BGR per track (preferred) or class."""
-    hue_seed = int(d.track_id) * 997 if d.track_id is not None else d.cls_id * 41 + 17
-    h = (hue_seed % 360) / 360.0
-    r, g, b = colorsys.hsv_to_rgb(h, 0.5, 0.88)
-    return (int(b * 255), int(g * 255), int(r * 255))
+_color_bgr_for_det = color_bgr_for_det
 
 
-PANEL_W = 292
+PANEL_W = 370
 FONT = cv2.FONT_HERSHEY_DUPLEX
 TEXT = (220, 216, 208)
 TEXT_DIM = (140, 136, 130)
@@ -114,9 +110,9 @@ def _load_panel_fonts() -> Optional[Tuple[Any, Any, Any]]:
         bold = path
     try:
         _panel_font_triple = (
-            ImageFont.truetype(bold, 18),
-            ImageFont.truetype(path, 15),
-            ImageFont.truetype(path, 13),
+            ImageFont.truetype(bold, 24),
+            ImageFont.truetype(path, 20),
+            ImageFont.truetype(path, 18),
         )
         return _panel_font_triple
     except OSError:
@@ -134,36 +130,36 @@ def _stats_panel_cv2(
     panel[:] = (42, 40, 38)
     cv2.line(panel, (0, 0), (0, h - 1), (72, 70, 68), 1)
 
-    y = 24
-    lh = 22
+    y = 28
+    lh = 26
 
-    def line(txt: str, color=TEXT, scale: float = 0.55, thick: int = 1) -> None:
+    def line(txt: str, color=TEXT, scale: float = 0.65, thick: int = 1) -> None:
         nonlocal y
-        cv2.putText(panel, txt, (12, y), FONT, scale, color, thick, cv2.LINE_AA)
+        cv2.putText(panel, txt, (14, y), FONT, scale, color, thick, cv2.LINE_AA)
         y += lh
 
-    line("Preview stats", ACCENT, 0.58, 1)
-    y += 2
+    line("Preview stats", ACCENT, 0.70, 1)
+    y += 4
     line(f"FPS   {fps:.1f}", TEXT)
     line(f"Objects {len(keep)}", TEXT)
-    y += 6
-    line("Track · class · conf", TEXT_DIM, 0.48, 1)
+    y += 8
+    line("Track · class · conf", TEXT_DIM, 0.55, 1)
     y += 4
 
     rows = sorted(
         keep,
         key=lambda d: (d.track_id is None, d.track_id or -1, d.cls_id),
     )
-    max_rows = max(1, (h - y - 24) // lh)
+    max_rows = max(1, (h - y - 28) // lh)
     for d in rows[:max_rows]:
         tid = f"{int(d.track_id)}" if d.track_id is not None else "—"
         nm = class_names_by_id.get(d.cls_id, "?")[:14]
         c = _color_bgr_for_det(d)
         txt = f"{tid:>4}  {nm:14}  {d.conf:.2f}"
-        cv2.putText(panel, txt, (12, y), FONT, 0.48, c, 1, cv2.LINE_AA)
+        cv2.putText(panel, txt, (14, y), FONT, 0.62, c, 1, cv2.LINE_AA)
         y += lh
     if len(rows) > max_rows:
-        line(f"+{len(rows) - max_rows} more", TEXT_DIM, 0.45, 1)
+        line(f"+{len(rows) - max_rows} more", TEXT_DIM, 0.52, 1)
     return panel
 
 
@@ -180,22 +176,22 @@ def _stats_panel_pil(
     bg_rgb = _bgr_to_rgb((42, 40, 38))
     im = Image.new("RGB", (PANEL_W, h), bg_rgb)
     draw = ImageDraw.Draw(im)
-    x = 12
+    x = 14
     y = 22
     draw.text((x, y), "Preview stats", font=title_f, fill=_bgr_to_rgb(ACCENT))
-    y += 28
+    y += 34
     draw.text((x, y), f"FPS   {fps:.1f}", font=body_f, fill=_bgr_to_rgb(TEXT))
-    y += 22
-    draw.text((x, y), f"Objects {len(keep)}", font=body_f, fill=_bgr_to_rgb(TEXT))
     y += 26
+    draw.text((x, y), f"Objects {len(keep)}", font=body_f, fill=_bgr_to_rgb(TEXT))
+    y += 30
     draw.text((x, y), "Track · class · conf", font=small_f, fill=_bgr_to_rgb(TEXT_DIM))
-    y += 20
-    lh = 20
+    y += 28
+    lh = 28
     rows = sorted(
         keep,
         key=lambda d: (d.track_id is None, d.track_id or -1, d.cls_id),
     )
-    max_rows = max(1, (h - y - 22) // lh)
+    max_rows = max(1, (h - y - 26) // lh)
     for d in rows[:max_rows]:
         tid = f"{int(d.track_id)}" if d.track_id is not None else "—"
         nm = class_names_by_id.get(d.cls_id, "?")[:14]
@@ -247,34 +243,13 @@ def _annotate_preview_frame(
         if d.conf >= conf and (d.cls_id in draw_ids if draw_ids else True)
     ]
 
-    for d in keep:
-        col = _color_bgr_for_det(d)
-        x1, y1, x2, y2 = d.xyxy
-        cv2.rectangle(img, (x1, y1), (x2, y2), col, 2, lineType=cv2.LINE_AA)
-        name = class_names_by_id.get(d.cls_id, f"c{d.cls_id}")
-        label = f"{name}"
-        if tracker_on and d.track_id is not None:
-            label = f"{name} · id {int(d.track_id)}"
-        (tw, th), bl = cv2.getTextSize(label, FONT, 0.45, 1)
-        ty = max(y1 - 4, th + 4)
-        cv2.rectangle(
-            img,
-            (x1, ty - th - 6),
-            (x1 + tw + 6, ty + 2),
-            (28, 26, 24),
-            -1,
-            lineType=cv2.LINE_AA,
-        )
-        cv2.putText(
-            img,
-            label,
-            (x1 + 3, ty - 2),
-            FONT,
-            0.45,
-            col,
-            1,
-            cv2.LINE_AA,
-        )
+    draw_detections(
+        img,
+        keep,
+        class_names_by_id=class_names_by_id,
+        conf_thresh=0.0,
+        tracker_on=tracker_on,
+    )
 
     h = img.shape[0]
     panel = _build_stats_panel(h, fps, keep, class_names_by_id)
@@ -316,15 +291,13 @@ def main():
     clock = SystemClock()
     tel = get_telemetry()
 
-    cam = Cv2Camera(cfg.src, clock=clock)
+    raw_cam = Cv2Camera(cfg.src, clock=clock)
+    cam = ThreadedCamera(raw_cam)
 
-    # Bench mode: process every frame in the pipeline + Ultralytics track() stride 1
-    vid_stride_eff = 1 if detector_only else cfg.vid_stride
     det = UltralyticsDetector(
         engine_path=resolve_path(cfg.engine),
         conf=cfg.conf_thresh,
         imgsz=cfg.img_size,
-        vid_stride=vid_stride_eff,
         tracker_cfg=resolve_path(cfg.tracker_cfg) if cfg.tracker_on else None,
     )
 
@@ -390,6 +363,8 @@ def main():
             "docker compose alert is unchanged."
         )
     cam.open()
+    if use_display:
+        cv2.namedWindow("YOLO Preview", cv2.WINDOW_NORMAL)
     fps_ema = 0.0
     last_t: Optional[float] = None
     fps_alpha = 0.12
@@ -420,7 +395,6 @@ def main():
             if stream is not None:
                 stream.submit_frame(vis)
             if use_display:
-                cv2.namedWindow("YOLO Preview", cv2.WINDOW_NORMAL)
                 cv2.imshow("YOLO Preview", vis)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break

@@ -2,13 +2,6 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional, Set
 
-def _csv_to_set_int(csv: str) -> Set[int]:
-    out = set()
-    for part in csv.split(","):
-        part = part.strip()
-        if part.isdigit(): out.add(int(part))
-    return out
-
 def _csv_to_set_str(csv: str) -> Set[str]:
     return {s.strip().lower() for s in csv.split(",") if s.strip()}
 
@@ -61,3 +54,12 @@ class Config:
         os.path.join(os.getenv("SAVE_DIR", "/workspace/work/alerts"), "alert_history.db"),
     )
     llm_model: str = os.getenv("LLM_MODEL", "none")
+    # Video understanding (VLM)
+    vlm_model: str = os.getenv("VLM_MODEL", "none")
+    vlm_max_frames: int = int(os.getenv("VLM_MAX_FRAMES", "5"))
+    vlm_max_width: int = int(os.getenv("VLM_MAX_WIDTH", "512"))
+    # Frame capture (for VLM)
+    frames_dir: str = os.getenv("FRAMES_DIR", "/workspace/work/frames")
+    frames_retention_days: int = int(os.getenv("FRAMES_RETENTION_DAYS", "30"))
+    capture_active_fps: float = float(os.getenv("CAPTURE_ACTIVE_FPS", "2.0"))
+    capture_cooldown_sec: float = float(os.getenv("CAPTURE_COOLDOWN_SEC", "10.0"))

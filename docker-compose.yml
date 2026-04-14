@@ -10,8 +10,8 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all
       # Optional tunables
-      - YOLO_MODEL=${YOLO_MODEL:-yolov8n.pt}
-      - YOLO_ENGINE=${YOLO_ENGINE:-yolov8n.engine}
+      - YOLO_MODEL=${YOLO_MODEL:-yolov8m.pt}
+      - YOLO_ENGINE=${YOLO_ENGINE:-yolov8m.engine}
       - CONF_THRESH=${CONF_THRESH:-0.80}
     working_dir: /workspace
     volumes:

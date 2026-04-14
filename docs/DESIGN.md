@@ -2,173 +2,235 @@
 
 ## Overview
 
-A real-time object detection system on NVIDIA Jetson that sends Telegram alerts and supports natural language Q&A over alert history.
+A real-time object detection system on NVIDIA Jetson that sends Telegram alerts, captures frames during activity, and supports on-demand video understanding via cloud VLMs and natural language Q&A over alert history.
 
 ```
-Camera → YOLO/TensorRT → Tracker → Presence → Alert → Telegram
-                                                  ↓
-                                               SQLite ← LLM Q&A ← Telegram /ask
+Camera --> YOLO/TensorRT --> Tracker --> Presence --> Alert --> Telegram
+                               |                       |
+                        FrameCaptureStep          SQLite alerts
+                        (2fps on detection)            |
+                               |                  LLM Q&A <-- /ask
+                         Frame Store
+                        (disk + SQLite)
+                               |
+                          VLM <-- /describe
 ```
-
----
 
 ## Architecture
 
-### Ports & Adapters (Hexagonal)
+### Ports and Adapters (Hexagonal)
 
-Core logic has zero dependency on frameworks. All I/O goes through interfaces defined in `app/core/ports.py`:
+Core logic has zero dependency on frameworks. All I/O goes through interfaces in `app/core/ports.py`:
 
 ```
-app/core/ports.py        ← Interfaces (Camera, Detector, ITracker, AlertSink, EventBus, Telemetry)
-app/core/pipeline.py     ← Pipeline engine (only depends on ports)
-app/adapters/            ← Implementations (camera_cv2, detector_ultra, alerts_telegram, etc.)
+app/core/ports.py        -- Interfaces (Camera, Detector, ITracker, AlertSink, EventBus, Telemetry)
+app/core/pipeline.py     -- Pipeline engine (depends only on ports)
+app/adapters/            -- Implementations (camera_cv2, detector_ultra, alerts_telegram, vlm_litellm, etc.)
 ```
 
-Swapping a component (e.g. different camera, different alert channel) means writing a new adapter — no core changes.
+Swapping a component (camera, detector, alert channel, VLM provider) means writing a new adapter.
 
 ### Detection Pipeline
 
-The pipeline is a linear chain of steps, each receiving and returning a shared `Ctx` object:
+Linear chain of steps, each receiving and returning a shared `Ctx` object:
 
 ```
-RateStep → ReadStep → DetectStep → TriggerFilterStep → PresenceStep → AlertStep → TelemetryStep
+RateStep --> ReadStep --> DetectStep --> FrameCaptureStep --> TriggerFilterStep --> PresenceStep --> AlertStep --> TelemetryStep
 ```
 
 | Step | What it does |
-|---|---|
-| **RateStep** | Adaptive FPS — slows down when idle, speeds up on detection |
+|------|-------------|
+| **RateStep** | Adaptive FPS -- slows when idle, speeds up on detection |
 | **ReadStep** | Grabs a frame from the camera |
 | **DetectStep** | Runs YOLO + optional tracker (BoT-SORT/ByteTrack) |
+| **FrameCaptureStep** | Saves frames at 2fps when trigger classes detected; nothing when idle; 10s cooldown |
 | **TriggerFilterStep** | Filters detections to configured trigger classes |
 | **PresenceStep** | State machine: requires N frames + M seconds before confirming presence |
-| **AlertStep** | Rate-limited alerts — saves snapshot, writes to SQLite, sends to Telegram |
-| **TelemetryStep** | Gauges (FPS target, presence, stride); pipeline timings are emitted earlier via `Telemetry.time_ms` (`read_ms`, `detect_ms`, `pipeline_loop_ms`, …) — see [metrics.md](metrics.md) |
+| **AlertStep** | Rate-limited alerts -- saves annotated snapshot (shared annotation module), writes to SQLite, sends to Telegram. Cooldown enforced by both pipeline clock and wall-clock to survive restarts |
+| **TelemetryStep** | Gauges and timing metrics |
+
+### Frame Capture and Storage
+
+`FrameCaptureStep` piggybacks on existing YOLO detections to save frames to disk:
+
+- **Idle**: save nothing (zero disk usage)
+- **Active** (YOLO detects trigger classes): save at `CAPTURE_ACTIVE_FPS` (default 2 fps)
+- **Cooldown**: keep saving for `CAPTURE_COOLDOWN_SEC` (default 10s) after last detection
+
+`FrameStore` manages disk layout and SQLite index:
+
+```
+work/frames/
+  2026-04-14/
+    08/
+      22-13-456.jpg
+      22-14-012.jpg
+      ...
+  frame_index.db    -- ts, path, has_detection, detection_classes, detection_count, best_conf
+```
+
+### Video Understanding (VLM)
+
+On-demand analysis of stored frames via cloud Vision-Language Models:
+
+```
+User: /describe what happened last night?
+                |
+        Text LLM parses time range ("last night" --> UTC boundaries)
+                |
+        FrameStore.query_range() loads matching frame records
+                |
+        Temporal clustering (gap > 60s = new event)
+                |
+        Pick best frame per cluster (highest confidence),
+        top 5 clusters by (has_det, conf, count)
+                |
+        Build text timeline of ALL detection events
+        (even those without an image slot)
+                |
+        Frames resized to 512px, base64 encoded
+                |
+        litellm.completion() sends images + timeline to VLM
+                |
+        Timestamped narrative returned to user
+```
+
+VLM adapter (`app/adapters/vlm_litellm.py`) uses `litellm` for provider-agnostic multimodal routing. The system prompt is enriched with a YOLO detection timeline covering all event clusters, so the VLM has context for events beyond the sampled images.
+
+All `/describe` queries and VLM responses are logged to `{SAVE_DIR}/describe_trace.log` for debugging.
 
 ### Q&A System
 
-Lightweight Text-to-SQL with two LLM calls per question:
+LangGraph agent with SQL toolkit for alert history queries:
 
 ```
-User question
-    ↓
-LLM call 1: "Generate a SQL query for this question" (~700 tokens)
-    ↓
-Execute SQL on SQLite (read-only, destructive queries blocked)
-    ↓
-LLM call 2: "Format these results as a human-readable answer" (~800 tokens)
-    ↓
-Answer sent back via Telegram
+User: /ask how many people today?
+                |
+        LangGraph agent with sql_db_query tool
+        (up to 6 iterations)
+                |
+        SQLite query on alert_history.db
+                |
+        Answer formatted and returned
 ```
-
-**Why not a LangChain agent?** The database has one table with 7 columns. An agent framework adds ~15,000 tokens of overhead per query (tool descriptions, ReAct reasoning, multi-turn loops). The two-call approach uses ~1,500 tokens and works within free-tier API limits.
 
 ### Telegram Integration
 
-Two separate Telegram integrations:
+Three Telegram concerns, two processes:
 
-1. **Alert sender** (`app/adapters/alerts_telegram.py`) — fires notifications from the detection pipeline. Synchronous, runs in the detection process.
-2. **Q&A bot** (`app/adapters/chat_telegram_bot.py`) — handles `/ask` commands. Async, built with `python-telegram-bot`, runs as a separate service.
+1. **Alert sender** (`alerts_telegram.py`) -- fires from the detection pipeline (synchronous, in `alert` process)
+2. **Q&A bot** (`chat_telegram_bot.py`) -- handles `/ask`, `/describe`, video uploads (async, `ask-telegram` process)
+3. **Video uploads** -- bot downloads video, extracts frames, sends to VLM
 
-They share the same bot token but serve different purposes. The Q&A bot runs CPU-only to avoid GPU contention with detection.
-
----
+They share the same bot token. The Q&A/VLM bot runs CPU-only to avoid GPU contention.
 
 ## Services (Docker Compose)
 
 | Service | Runtime | Purpose |
-|---|---|---|
-| `alert` | GPU (nvidia) | Detection pipeline + Telegram alerts |
-| `ask-telegram` | CPU only | Telegram Q&A bot |
-| `exporter` | GPU (nvidia) | One-shot: converts .pt → .engine |
-| `preview` | GPU (nvidia) | Live detection overlay; optional local display, optional MJPEG browser UI (`PREVIEW_STREAM_PORT`), optional `PREVIEW_DETECTOR_ONLY` bench mode |
-| `otel-collector` | CPU (optional profile) | Receives OTLP metrics from the app; exposes Prometheus scrape for Grafana |
-
----
+|---------|---------|---------|
+| `alert` | GPU | Detection pipeline + Telegram alerts + frame capture |
+| `ask-telegram` | CPU | Telegram bot (`/ask` Q&A + `/describe` VLM + video uploads) |
+| `exporter` | GPU | One-shot: converts .pt to .engine |
+| `preview` | GPU | Live MJPEG stream / local display |
+| `otel-collector` | CPU | OTLP metrics receiver (optional) |
 
 ## Database
 
-Single SQLite file (`alert_history.db`) with one table:
+Two SQLite databases:
+
+**alert_history.db** -- written by alert pipeline, queried by `/ask`:
 
 ```sql
 CREATE TABLE alerts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts              TEXT NOT NULL,       -- ISO-8601 UTC
-    count           INTEGER NOT NULL,    -- objects detected
-    best_conf       REAL NOT NULL,       -- highest confidence
-    image_path      TEXT,                -- snapshot path
-    trigger_classes TEXT DEFAULT '[]',   -- JSON array: ["person","car"]
-    context_classes TEXT DEFAULT '[]'    -- JSON array: all classes in frame
+    ts              TEXT NOT NULL,
+    count           INTEGER NOT NULL,
+    best_conf       REAL NOT NULL,
+    image_path      TEXT,
+    trigger_classes TEXT DEFAULT '[]',
+    context_classes TEXT DEFAULT '[]'
 );
 ```
 
-Written by the detection pipeline, queried by the Q&A system.
+**frame_index.db** -- written by FrameCaptureStep, queried by `/describe`:
 
----
+```sql
+CREATE TABLE frames (
+    ts                TEXT NOT NULL,
+    path              TEXT NOT NULL,
+    has_detection     INTEGER NOT NULL DEFAULT 0,
+    detection_classes TEXT NOT NULL DEFAULT '[]',
+    detection_count   INTEGER NOT NULL DEFAULT 0,
+    best_conf         REAL NOT NULL DEFAULT 0.0
+);
+```
 
-## LLM Provider Routing
+## LLM / VLM Provider Routing
 
-`app/adapters/llm_litellm.py` routes to any OpenAI-compatible provider based on the `LLM_MODEL` string prefix:
+**Text LLM** (`llm_litellm.py`): uses `ChatOpenAI` from LangChain pointed at provider endpoints:
 
 ```
-groq/llama-3.1-8b-instant  →  api.groq.com/openai/v1
-xai/grok-2-latest           →  api.x.ai/v1
-openai/gpt-4o-mini          →  api.openai.com/v1  (default)
+groq/llama-3.3-70b-versatile  -->  api.groq.com/openai/v1
+xai/grok-2-latest              -->  api.x.ai/v1
+openai/gpt-4o-mini             -->  api.openai.com/v1
 ```
 
-Uses `ChatOpenAI` from LangChain pointed at the provider's endpoint. API keys read from `GROQ_API_KEY`, `XAI_API_KEY`, `OPENAI_API_KEY`.
+**Vision LLM** (`vlm_litellm.py`): uses `litellm.completion()` for multimodal routing:
 
----
+```
+openai/gpt-4o-mini                                -->  OpenAI vision API
+groq/meta-llama/llama-4-scout-17b-16e-instruct    -->  Groq vision API (max 5 images)
+gemini/gemini-2.0-flash                           -->  Google Gemini API
+```
 
 ## Key Design Decisions
 
 | Decision | Rationale |
-|---|---|
-| Hexagonal architecture (ports/adapters) | Swap camera, detector, alert sink, or LLM without touching core logic |
-| Pipeline as linear steps | Easy to add/remove/reorder steps; each step is independently testable |
-| SQLite (not Postgres) | Single file, zero setup, works on Jetson with no server process |
-| Two-call Text-to-SQL (not agent) | ~1,500 tokens vs ~15,000. Fits free-tier LLM APIs, faster response |
-| Separate `ask-telegram` service | CPU-only — no GPU contention with YOLO inference |
-| `python-telegram-bot` (async) | Non-blocking I/O, declarative routing, built-in error handling |
-| Adaptive FPS | Saves power/thermals on Jetson when scene is empty |
-
----
+|----------|-----------|
+| Hexagonal architecture | Swap camera, detector, alert sink, VLM without touching core |
+| Pipeline as linear steps | Easy to add/remove/reorder; each step independently testable |
+| SQLite (not Postgres) | Single file, zero setup, works on Jetson |
+| Separate frame capture from alerts | Frame store serves VLM; alert DB serves text Q&A; independent concerns |
+| Save nothing when idle | Disk usage proportional to activity, not uptime |
+| litellm for VLM routing | Provider-agnostic multimodal; already a dependency |
+| LLM time-range parsing | Handles fuzzy natural language ("last night", "tuesday morning") |
+| Separate ask-telegram service | CPU-only, no GPU contention with YOLO |
+| YOLOv8m default | Better accuracy (50.2 mAP vs 37.3 for v8n); fast enough at adaptive FPS |
 
 ## File Map
 
 ```
 app/
-├── core/                    # Business logic (no framework deps)
-│   ├── ports.py             # Interfaces: Camera, Detector, AlertSink, etc.
-│   ├── pipeline.py          # Detection pipeline (step chain)
-│   ├── config.py            # Env-based configuration
-│   ├── state.py             # Presence state machine
-│   ├── presence_policy.py   # Presence confirmation rules
-│   ├── alert_policy.py      # Alert rate-limiting and grouping
-│   ├── rate_policy.py       # Adaptive FPS policy
-│   ├── clock.py             # Time abstraction (testable)
-│   ├── events.py            # Event types (PersonDetected, AlertIssued)
-│   ├── alert_history.py     # SQLite read/write
-│   ├── qa.py                # Text-to-SQL Q&A service
-│   ├── qa_factory.py        # Wires QAService with DB + LLM
-│   └── chat_commands.py     # Transport-agnostic command handler
-├── adapters/                # I/O implementations
-│   ├── camera_cv2.py        # OpenCV camera (USB, RTSP, file)
-│   ├── detector_ultra.py    # Ultralytics YOLO detector
-│   ├── detector_trt.py      # TensorRT detector
-│   ├── tracker_x.py         # BoT-SORT / ByteTrack wrapper
-│   ├── alerts_telegram.py   # Telegram alert sender
-│   ├── chat_telegram_bot.py # Telegram Q&A bot (python-telegram-bot)
-│   ├── llm_litellm.py       # LLM provider routing (Groq, xAI, OpenAI)
-│   ├── telemetry_log.py     # Logging-based telemetry
-│   └── event_bus_inproc.py  # In-process event bus
-├── app/                     # Entrypoints
-│   ├── run.py               # Main detection + alert loop
-│   ├── preview.py           # Live video preview
-│   ├── ask_telegram.py      # Telegram Q&A bot entrypoint
-│   ├── commands.py          # CLI commands
-│   ├── event_bus.py         # Event bus setup
-│   └── rate_limit.py        # Rate limiter setup
-└── tools/                   # One-shot utilities
-    ├── export_engine.py     # YOLO → TensorRT export
-    └── ask.py               # CLI Q&A tool
+  core/
+    ports.py                 -- Interfaces: Camera, Detector, AlertSink, etc.
+    pipeline.py              -- Detection pipeline (step chain incl. FrameCaptureStep)
+    config.py                -- Env-based configuration
+    frame_store.py           -- SQLite + disk frame storage for VLM
+    video_understanding.py   -- VideoUnderstandingService (time parsing, sampling, VLM)
+    state.py                 -- Presence state machine
+    presence_policy.py       -- Presence confirmation rules
+    annotate.py              -- Shared bounding box / label drawing (preview + alert snapshots)
+    alert_policy.py          -- Alert rate-limiting and grouping (wall-clock cooldown)
+    rate_policy.py           -- Adaptive FPS policy
+    clock.py                 -- Time abstraction (testable)
+    events.py                -- Event types
+    alert_history.py         -- SQLite alert read/write
+    qa.py                    -- LangGraph Q&A service
+    qa_factory.py            -- Wires QAService with DB + LLM
+  adapters/
+    camera_cv2.py            -- OpenCV camera (USB, RTSP, file)
+    detector_ultra.py        -- Ultralytics YOLO detector
+    alerts_telegram.py       -- Telegram alert sender
+    chat_telegram_bot.py     -- Telegram bot (/ask, /describe, video uploads)
+    llm_litellm.py           -- Text LLM provider routing
+    vlm_litellm.py           -- Vision LLM provider routing (multimodal)
+    telemetry_log.py         -- Logging-based telemetry
+    mjpeg_stream.py          -- MJPEG HTTP server for preview
+  app/
+    run.py                   -- Main detection + alert + frame capture loop
+    preview.py               -- Live video preview
+    ask_telegram.py          -- Telegram bot entrypoint
+  tools/
+    export_engine.py         -- YOLO to TensorRT export
+    ask.py                   -- CLI Q&A tool
 ```

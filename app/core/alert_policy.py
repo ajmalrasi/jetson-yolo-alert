@@ -1,3 +1,4 @@
+import time as _time
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, Optional
 
@@ -6,19 +7,35 @@ from typing import Dict, Iterable, Optional
 class AlertPolicy:
     window_sec: float
     cooldown_sec: float = 0.0  # if > 0, min time between any two alerts
-    last_sent: float = field(default=-1e9)
+    last_sent: float = field(default=0.0)
     pending_ids: set[int] = field(default_factory=set)
     pending_best: float = 0.0
     pending_img_path: str | None = None
-    # Snapshot metadata used to keep message and image consistent.
     pending_snapshot_count: int = 0
     pending_snapshot_best: float = 0.0
     pending_snapshot_classes: set[str] = field(default_factory=set)
     pending_snapshot_context_classes: set[str] = field(default_factory=set)
     last_by_id: Dict[int, float] = field(default_factory=dict)  # id -> last alert time
+    _wall_last_sent: float = field(default=0.0, repr=False)
+
+    def __post_init__(self):
+        # Seed with wall-clock so the first alert after a restart still
+        # respects cooldown (prevents restart-spam).
+        if self._wall_last_sent == 0.0:
+            self._wall_last_sent = _time.time()
 
     def _min_interval_sec(self) -> float:
         return max(self.window_sec, self.cooldown_sec) if self.cooldown_sec > 0 else self.window_sec
+
+    def _global_cooldown_ok(self, now: float) -> bool:
+        """True when enough time has passed since the last alert.
+
+        Uses both the pipeline clock *and* wall-clock so that service
+        restarts (which reset the pipeline clock) don't bypass cooldown.
+        """
+        pipeline_ok = (now - self.last_sent) >= self._min_interval_sec()
+        wall_ok = (_time.time() - self._wall_last_sent) >= self._min_interval_sec()
+        return pipeline_ok and wall_ok
 
     def add(
         self,
@@ -41,7 +58,6 @@ class AlertPolicy:
 
         if added_any:
             self.pending_best = max(self.pending_best, best_conf)
-            # Keep latest snapshot metadata so the sent message matches the sent image.
             self.pending_img_path = frame_img_path
             self.pending_snapshot_count = int(frame_count)
             self.pending_snapshot_best = float(frame_best_conf)
@@ -49,7 +65,7 @@ class AlertPolicy:
             self.pending_snapshot_context_classes = set(frame_context_class_names or ())
 
     def due(self, now: float) -> bool:
-        return bool(self.pending_ids) and (now - self.last_sent) >= self._min_interval_sec()
+        return bool(self.pending_ids) and self._global_cooldown_ok(now)
 
     def flush(self, now: float) -> tuple[int, float, Optional[str], set[str], set[str]]:
         img = self.pending_img_path
@@ -73,4 +89,5 @@ class AlertPolicy:
         self.pending_snapshot_classes.clear()
         self.pending_snapshot_context_classes.clear()
         self.last_sent = now
+        self._wall_last_sent = _time.time()
         return n, b, img, classes, context_classes
